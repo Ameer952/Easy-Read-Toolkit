@@ -8,6 +8,7 @@ import { ThemedView } from '@/components/ThemedView';
 import { IconSymbol } from '@/components/ui/IconSymbol';
 import { Colors } from '@/constants/Colors';
 import { useTheme } from '@/hooks/useTheme';
+import { PageHeader } from '@/components/PageHeader';
 
 const STORAGE_KEY = 'easyread.settings.v1';
 
@@ -122,15 +123,14 @@ export default function SettingsScreen() {
 
   return (
     <ThemedView style={styles.container}>
-      {/* Header */}
-      <ThemedView style={[styles.header, { backgroundColor: Colors[theme].headerBackground, paddingTop: insets.top + 20 }]}>
-        <ThemedText style={styles.headerTitle}>Settings</ThemedText>
-        <ThemedText style={styles.headerSubtitle}>Customize your reading experience</ThemedText>
-      </ThemedView>
+      <PageHeader 
+        title="Settings" 
+        subtitle="Customize your reading experience" 
+      />
 
       <ScrollView 
         style={styles.scrollView} 
-        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 100 }]}
+        contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
         {/* Reading Preferences */}
@@ -309,21 +309,6 @@ export default function SettingsScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-  },
-  header: {
-    paddingBottom: 24,
-    paddingHorizontal: 20,
-  },
-  headerTitle: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    color: '#fff',
-    marginBottom: 4,
-  },
-  headerSubtitle: {
-    fontSize: 16,
-    color: '#fff',
-    opacity: 0.8,
   },
   scrollView: {
     flex: 1,

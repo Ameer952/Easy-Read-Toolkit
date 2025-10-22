@@ -17,12 +17,13 @@ interface FeatureCardProps {
 
 export function FeatureCard({ title, description, iconName, onPress }: FeatureCardProps) {
   const colorScheme = useColorScheme();
+  const currentColorScheme = (colorScheme ?? 'light') as 'light' | 'dark';
 
   return (
     <TouchableOpacity 
       style={[
         styles.card,
-        { backgroundColor: Colors[colorScheme ?? 'light'].background }
+        { backgroundColor: Colors[currentColorScheme].background }
       ]}
       onPress={onPress}
       activeOpacity={0.8}
@@ -31,7 +32,7 @@ export function FeatureCard({ title, description, iconName, onPress }: FeatureCa
         <IconSymbol 
           size={32} 
           name={iconName} 
-          color={Colors[colorScheme ?? 'light'].primary} 
+          color={Colors[currentColorScheme].primary} 
         />
       </ThemedView>
       <ThemedText style={styles.title}>{title}</ThemedText>

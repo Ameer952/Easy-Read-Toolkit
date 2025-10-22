@@ -10,9 +10,11 @@ import { ThemedText } from '@/components/ThemedText';
 import { ThemedView } from '@/components/ThemedView';
 import { Colors } from '@/constants/Colors';
 import { useTheme } from '@/hooks/useTheme';
+import { useAuth } from '@/hooks/useAuth';
 
 export default function HomeScreen() {
   const { theme } = useTheme();
+  const { user } = useAuth();
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
@@ -23,12 +25,21 @@ export default function HomeScreen() {
     return 'Good evening';
   };
 
+  const getFirstName = () => {
+    if (!user?.name) return 'there';
+    return user.name.split(' ')[0];
+  };
+
   const handleScanDocument = () => {
     router.push('/camera');
   };
 
   const handleUploadURL = () => {
     router.push('/url-import');
+  };
+
+  const handleUploadPDF = () => {
+    router.push('/pdf-upload');
   };
 
   const handleFeaturePress = (feature: string) => {
@@ -43,10 +54,7 @@ export default function HomeScreen() {
           styles.header,
           {
             backgroundColor: Colors[theme].headerBackground,
-            paddingTop: insets.top + 16,
-            borderTopLeftRadius: 24,
-            borderTopRightRadius: 24,
-            overflow: 'hidden',
+            paddingTop: insets.top + 20,
           },
         ]}
       >
@@ -58,15 +66,18 @@ export default function HomeScreen() {
         <ThemedText style={styles.headerTitleOnly}>Easy Read ToolKit</ThemedText>
       </ThemedView>
 
-      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
+      <ScrollView 
+        style={styles.scrollView} 
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 120, paddingTop: 20 }]}
+        showsVerticalScrollIndicator={false}
+        bounces={false}
+      >
         {/* Greeting Section */}
         <ThemedView style={styles.greetingSection}>
-          <ThemedText style={styles.greeting}>{getGreeting()}!</ThemedText>
+          <ThemedText style={styles.greeting}>{getGreeting()}, {getFirstName()}!</ThemedText>
           <ThemedText style={styles.supportiveText}>
             Ready to make reading easier? Let's get started!
           </ThemedText>
-          
-
         </ThemedView>
 
         {/* Primary Actions */}
@@ -79,9 +90,14 @@ export default function HomeScreen() {
               onPress={handleScanDocument}
             />
             <ActionButton
-              title="Upload URL"
+              title="Paste URL"
               iconName="link"
               onPress={handleUploadURL}
+            />
+            <ActionButton
+              title="Upload PDF"
+              iconName="doc.badge.plus"
+              onPress={handleUploadPDF}
             />
           </ThemedView>
         </ThemedView>
@@ -123,9 +139,9 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingBottom: 20,
+    paddingBottom: 24,
     paddingHorizontal: 20,
-    minHeight: 60,
+    minHeight: 100,
   },
   logo: {
     width: 32,
@@ -140,10 +156,14 @@ const styles = StyleSheet.create({
     flex: 1,
     textAlign: 'center',
     lineHeight: 24,
+    paddingVertical: 8,
   },
   scrollView: {
     flex: 1,
     paddingHorizontal: 20,
+  },
+  scrollContent: {
+    paddingTop: 20,
   },
   greetingSection: {
     marginTop: 24,

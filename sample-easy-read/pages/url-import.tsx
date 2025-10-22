@@ -21,6 +21,22 @@ export default function UrlImportScreen() {
   const [retryCount, setRetryCount] = useState(0);
   const [debugMode, setDebugMode] = useState(false);
 
+  const runTestExtraction = () => {
+    console.log('Running test extraction');
+    const testText = `This is a test extraction from ${url}. 
+
+Artificial Intelligence (AI) is intelligence demonstrated by machines, in contrast to the natural intelligence displayed by humans and animals. Leading AI textbooks define the field as the study of "intelligent agents": any device that perceives its environment and takes actions that maximize its chance of successfully achieving its goals.
+
+The term "artificial intelligence" is often used to describe machines (or computers) that mimic "cognitive" functions that humans associate with the human mind, such as "learning" and "problem solving".
+
+As machines become increasingly capable, tasks considered to require "intelligence" are often removed from the definition of AI, a phenomenon known as the AI effect. A quip in Tesler's Theorem says "AI is whatever hasn't been done yet." For instance, optical character recognition is frequently excluded from things considered to be AI, having become a routine technology.
+
+Modern machine learning techniques have enabled AI systems to achieve superhuman performance in many domains, including image recognition, natural language processing, and game playing.`;
+
+    setExtracted(testText);
+    setDocumentTitle('Test Document - AI Article');
+    setLoading(false);
+  };
 
   const runExtraction = () => {
     if (!webRef.current) {
@@ -121,7 +137,6 @@ export default function UrlImportScreen() {
     try {
       const data = JSON.parse(e.nativeEvent.data);
       console.log('Parsed data:', data);
-      console.log('Extracted text length:', data.text?.length || 0);
       if (data.ok) {
         const extractedText = data.text || '';
         console.log('Extracted text length:', extractedText.length);
@@ -177,12 +192,7 @@ export default function UrlImportScreen() {
       documents.unshift(document);
       await AsyncStorage.setItem('documents', JSON.stringify(documents));
 
-      Alert.alert('Success', 'Document saved successfully!', [
-        {
-          text: 'OK',
-          onPress: () => router.push('/(tabs)/documents'),
-        },
-      ]);
+      Alert.alert('Success', 'Document saved successfully!');
     } catch (error) {
       Alert.alert('Error', 'Failed to save document.');
     }
@@ -207,9 +217,6 @@ export default function UrlImportScreen() {
   return (
     <ThemedView style={styles.container}>
       <ThemedView style={[styles.header, { backgroundColor: Colors[colorScheme ?? 'light'].headerBackground }]}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-          <IconSymbol name="chevron.left" size={24} color="#fff" />
-        </TouchableOpacity>
         <ThemedText style={styles.headerTitle}>Import from URL</ThemedText>
       </ThemedView>
 
@@ -230,16 +237,6 @@ export default function UrlImportScreen() {
             setExtracted(''); 
             setDocumentTitle(''); 
             setRetryCount(0);
-            // Trigger WebView reload to start extraction
-            if (webRef.current) {
-              webRef.current.reload();
-            }
-            // Also try direct extraction after a delay
-            setTimeout(() => {
-              if (webRef.current) {
-                runExtraction();
-              }
-            }, 3000);
           }}
           disabled={loading}
         >
@@ -249,18 +246,13 @@ export default function UrlImportScreen() {
           </ThemedText>
         </TouchableOpacity>
         
-        {/* Debug button */}
         <TouchableOpacity 
-          style={[styles.loadBtn, { backgroundColor: '#6c757d', marginTop: 8 }]} 
-          onPress={() => { 
-            console.log('Force extract button pressed');
-            setLoading(true);
-            runExtraction();
-          }}
+          style={[styles.testBtn, { backgroundColor: '#6c757d' }]} 
+          onPress={runTestExtraction}
         >
-          <ThemedText style={styles.loadText}>Force Extract</ThemedText>
+          <IconSymbol name="wrench" size={16} color="#fff" />
+          <ThemedText style={styles.loadText}>Test</ThemedText>
         </TouchableOpacity>
-        
       </ThemedView>
 
       {/* Quick URL buttons for testing */}
@@ -288,24 +280,22 @@ export default function UrlImportScreen() {
         </ThemedView>
       </ThemedView>
 
-      <WebView
-        ref={webRef}
-        source={{ uri: url }}
-        onLoadStart={() => console.log('WebView load started')}
-        onLoadEnd={() => {
-          console.log('WebView load ended, starting extraction');
-          // Always run extraction when WebView finishes loading
-          setTimeout(() => {
-            console.log('Starting extraction after timeout');
+      {!extracted && (
+        <WebView
+          ref={webRef}
+          source={{ uri: url }}
+          onLoadStart={() => console.log('WebView load started')}
+          onLoadEnd={() => {
+            console.log('WebView load ended, starting extraction');
             runExtraction();
-          }, 2000); // Give page more time to fully render
-        }}
-        onError={(error) => console.log('WebView error:', error)}
-        onMessage={onMessage}
-        style={[styles.webview, { height: 1 }]} // Hide WebView but keep it functional
-        javaScriptEnabled={true}
-        domStorageEnabled={true}
-      />
+          }}
+          onError={(error) => console.log('WebView error:', error)}
+          onMessage={onMessage}
+          style={styles.webview}
+          javaScriptEnabled={true}
+          domStorageEnabled={true}
+        />
+      )}
 
       {!!extracted && (
         <ScrollView style={styles.resultContainer}>
@@ -348,8 +338,7 @@ export default function UrlImportScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  header: { paddingTop: 60, paddingBottom: 12, paddingHorizontal: 20, flexDirection: 'row', alignItems: 'center' },
-  backButton: { marginRight: 12 },
+  header: { paddingTop: 60, paddingBottom: 12, paddingHorizontal: 20 },
   headerTitle: { color: '#fff', fontWeight: '700', fontSize: 20 },
   controls: { flexDirection: 'row', gap: 8, padding: 12 },
   input: { 

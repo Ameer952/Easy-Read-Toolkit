@@ -111,12 +111,7 @@ export default function CameraScreen() {
       documents.unshift(document);
       await AsyncStorage.setItem('documents', JSON.stringify(documents));
 
-      Alert.alert('Success', 'Document saved successfully!', [
-        {
-          text: 'OK',
-          onPress: () => router.push('/(tabs)/documents'),
-        },
-      ]);
+      Alert.alert('Success', 'Document saved successfully!');
     } catch (error) {
       Alert.alert('Error', 'Failed to save document.');
     }
@@ -149,9 +144,6 @@ export default function CameraScreen() {
   return (
     <ThemedView style={styles.container}>
       <ThemedView style={[styles.header, { backgroundColor: Colors[colorScheme ?? 'light'].headerBackground }]}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-          <IconSymbol name="chevron.left" size={24} color="#fff" />
-        </TouchableOpacity>
         <ThemedText style={styles.headerTitle}>Scan Document</ThemedText>
       </ThemedView>
 
@@ -226,8 +218,7 @@ const styles = StyleSheet.create({
   flex1: { flex: 1 },
   center: { alignItems: 'center', justifyContent: 'center' },
   container: { flex: 1 },
-  header: { paddingTop: 60, paddingBottom: 16, paddingHorizontal: 20, flexDirection: 'row', alignItems: 'center' },
-  backButton: { marginRight: 12 },
+  header: { paddingTop: 60, paddingBottom: 16, paddingHorizontal: 20 },
   headerTitle: { fontSize: 22, fontWeight: '700', color: '#fff' },
   cameraContainer: { flex: 1, justifyContent: 'flex-end', alignItems: 'center', backgroundColor: '#000' },
   captureButton: { width: 72, height: 72, borderRadius: 36, marginBottom: 24 },
