@@ -20,7 +20,8 @@
       "infoPlist": {
         "NSDocumentsFolderUsageDescription": "This app needs access to documents to read PDF files for text extraction.",
         "NSCameraUsageDescription": "This app needs camera access to scan documents for text extraction."
-      }
+      },
+      "bundleIdentifier": "com.anonymous.sampleeasyread"
     },
     "android": {
       "adaptiveIcon": {
@@ -29,8 +30,11 @@
       },
       "permissions": [
         "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.CAMERA",
+        "android.permission.READ_EXTERNAL_STORAGE",
         "android.permission.CAMERA"
-      ]
+      ],
+      "package": "com.anonymous.sampleeasyread"
     },
     "web": {
       "bundler": "metro",
