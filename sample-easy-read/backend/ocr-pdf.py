@@ -1,12 +1,11 @@
+import argparse
+import os
+import sys
 from pdf2image import convert_from_path
 import pytesseract
 from PIL import Image
 import cv2
 import numpy as np
-import os
-
-# Set Tesseract executable path
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 def preprocess_image(pil_img):
     """
@@ -24,63 +23,100 @@ def preprocess_image(pil_img):
     img = cv2.medianBlur(img, 3)
 
     # Sharpening filter
-    kernel = np.array([[0,-1,0],[-1,5,-1],[0,-1,0]])
+    kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
     img = cv2.filter2D(img, -1, kernel)
 
     return Image.fromarray(img)
 
-# Tesseract config
-# --oem 3: Default OCR Engine
-# --psm 4: Assume a single column of text (try 1 or 6 for different layouts)
-custom_config = r'--oem 3 --psm 4'
+def build_config(oem, psm):
+    return f'--oem {oem} --psm {psm}'
 
-# Path to PDF file
-pdf_path = r"C:\Users\Nebula PC\ocr-easy-read\StayingSafe_NowYouAreHome_UPDATED.pdf"
+def main():
+    parser = argparse.ArgumentParser(description="OCR PDF to text using Tesseract with preprocessing")
+    parser.add_argument("--pdf", required=True, help="Path to input PDF")
+    parser.add_argument("--poppler-path", default=None, help="Optional Poppler bin folder path")
+    parser.add_argument("--tesseract-cmd", default=None, help="Optional path to tesseract executable")
+    parser.add_argument("--output", default=None, help="Optional output file path (if not set, prints to stdout)")
+    parser.add_argument("--dpi", type=int, default=400, help="DPI used when converting PDF to images")
+    parser.add_argument("--lang", default="eng", help="Tesseract language(s), e.g. 'eng' or 'eng+osd'")
+    parser.add_argument("--oem", type=int, default=3, help="Tesseract OEM (default 3)")
+    parser.add_argument("--psm", type=int, default=4, help="Tesseract PSM (default 4)")
+    parser.add_argument("--save-pages", action="store_true", help="Save per-page text files into ./output (optional)")
+    args = parser.parse_args()
 
-# Path to Poppler bin folder
-poppler_path = r"C:\Users\Nebula PC\Downloads\Release-25.07.0-0\poppler-25.07.0\Library\bin"
+    if args.tesseract_cmd:
+        pytesseract.pytesseract.tesseract_cmd = args.tesseract_cmd
+    else:
+        # If environment variable provided, prefer it
+        if os.environ.get("TESSERACT_CMD"):
+            pytesseract.pytesseract.tesseract_cmd = os.environ["TESSERACT_CMD"]
 
-# Check if PDF exists
-if not os.path.exists(pdf_path):
-    raise FileNotFoundError(f"PDF not found at: {pdf_path}")
+    pdf_path = args.pdf
+    poppler_path = args.poppler_path
 
-print("Starting OCR for PDF:", pdf_path)
+    if not os.path.exists(pdf_path):
+        print(f"ERROR: PDF not found at: {pdf_path}", file=sys.stderr)
+        sys.exit(2)
 
-# Convert PDF to images (increase DPI for better clarity)
-pages = convert_from_path(pdf_path, dpi=400, poppler_path=poppler_path)
-print(f"Total pages found: {len(pages)}")
+    print(f"Starting OCR for PDF: {pdf_path}", file=sys.stderr)
 
-# Create output folder if it doesn't exist
-output_folder = os.path.join(os.getcwd(), "output")
-os.makedirs(output_folder, exist_ok=True)
+    # Convert PDF to images
+    try:
+        if poppler_path:
+            pages = convert_from_path(pdf_path, dpi=args.dpi, poppler_path=poppler_path)
+        else:
+            pages = convert_from_path(pdf_path, dpi=args.dpi)
+    except Exception as e:
+        print("ERROR: failed to convert PDF to images:", e, file=sys.stderr)
+        sys.exit(3)
 
-all_text = []  # collect text for combined file
+    print(f"Total pages found: {len(pages)}", file=sys.stderr)
 
-for i, page in enumerate(pages, start=1):
-    print(f"Processing page {i}...")
+    output_folder = os.path.join(os.getcwd(), "output")
+    if args.save_pages:
+        os.makedirs(output_folder, exist_ok=True)
 
-    # Preprocess page
-    processed_page = preprocess_image(page)
+    all_text = []
+    custom_config = build_config(args.oem, args.psm)
 
-    # OCR
-    text = pytesseract.image_to_string(processed_page, config=custom_config, lang='eng+osd')
+    for i, page in enumerate(pages, start=1):
+        print(f"Processing page {i}...", file=sys.stderr)
 
-    # Print OCR result preview
-    print(f"--- Page {i} OCR Done ---")
-    print(text[:200], "...")  # first 200 chars
+        processed_page = preprocess_image(page)
 
-    # Save per-page text in output folder
-    page_file = os.path.join(output_folder, f'page_{i}_ocr.txt')
-    with open(page_file, 'w', encoding='utf-8') as f:
-        f.write(text)
-    print(f"Saved OCR text to {page_file}")
+        try:
+            text = pytesseract.image_to_string(processed_page, config=custom_config, lang=args.lang)
+        except Exception as e:
+            print(f"ERROR: tesseract failed on page {i}: {e}", file=sys.stderr)
+            text = ""
 
-    # Store in combined list
-    all_text.append(f"--- Page {i} ---\n{text}")
+        print(f"--- Page {i} OCR Done ---", file=sys.stderr)
+        print(text[:200] + ("..." if len(text) > 200 else ""), file=sys.stderr)
 
-# Save everything into one combined file in output folder
-combined_file = os.path.join(output_folder, 'document_ocr.txt')
-with open(combined_file, 'w', encoding='utf-8') as f:
-    f.write("\n\n".join(all_text))
+        if args.save_pages:
+            page_file = os.path.join(output_folder, f'page_{i}_ocr.txt')
+            try:
+                with open(page_file, 'w', encoding='utf-8') as f:
+                    f.write(text)
+                print(f"Saved OCR text to {page_file}", file=sys.stderr)
+            except Exception as e:
+                print(f"WARNING: failed to save page {i} text: {e}", file=sys.stderr)
 
-print(f"All pages OCR completed. Combined text saved to {combined_file}")
+        all_text.append(f"--- Page {i} ---\n{text}")
+
+    combined = "\n\n".join(all_text)
+
+    if args.output:
+        try:
+            with open(args.output, 'w', encoding='utf-8') as f:
+                f.write(combined)
+            print(f"Combined text saved to {args.output}", file=sys.stderr)
+        except Exception as e:
+            print(f"ERROR: failed to write output file: {e}", file=sys.stderr)
+            sys.exit(4)
+    else:
+        # Print combined text to stdout for calling process (e.g. Node)
+        print(combined)
+
+if __name__ == "__main__":
+    main()
