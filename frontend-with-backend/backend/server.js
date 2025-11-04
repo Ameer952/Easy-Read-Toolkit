@@ -22,6 +22,122 @@ const clamp = (s, max = 20000) => (s && s.length > max ? s.slice(0, max) : s);
 // Health check
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
+// ======== AUTH (DEV-FRIENDLY) ========
+const jwt = require("jsonwebtoken");
+const bcrypt = require("bcryptjs");
+
+// In-memory store for dev (replace with DB in production)
+const users = new Map(); // key: email, value: { id, name, email, hash, createdAt }
+
+const registerSchema = z.object({
+   name: z.string().min(1),
+   email: z.string().email(),
+   password: z.string().min(6),
+});
+
+const loginSchema = z.object({
+   email: z.string().email(),
+   password: z.string().min(6),
+});
+
+function signToken(user) {
+   const ttl = Number(process.env.TOKEN_TTL_HOURS || 24);
+   return jwt.sign(
+      { sub: user.id, email: user.email, name: user.name },
+      process.env.JWT_SECRET || "dev-secret",
+      { expiresIn: `${ttl}h` }
+   );
+}
+
+function publicUser(u) {
+   return { id: u.id, name: u.name, email: u.email, createdAt: u.createdAt };
+}
+
+// POST /api/auth/register
+app.post("/api/auth/register", async (req, res) => {
+   try {
+      const { name, email, password } = registerSchema.parse(req.body);
+      const key = email.toLowerCase();
+
+      if (users.has(key)) {
+         return res
+            .status(409)
+            .json({ success: false, message: "Email already registered" });
+      }
+
+      const hash = await bcrypt.hash(password, 10);
+      const user = {
+         id: Date.now().toString(),
+         name: name.trim(),
+         email: key,
+         hash,
+         createdAt: new Date().toISOString(),
+      };
+      users.set(key, user);
+
+      const token = signToken(user);
+      return res.json({ success: true, user: publicUser(user), token });
+   } catch (e) {
+      return res
+         .status(400)
+         .json({ success: false, message: e.message || "Bad request" });
+   }
+});
+
+// POST /api/auth/login
+app.post("/api/auth/login", async (req, res) => {
+   try {
+      const { email, password } = loginSchema.parse(req.body);
+      const key = email.toLowerCase();
+      const user = users.get(key);
+
+      if (!user)
+         return res
+            .status(401)
+            .json({ success: false, message: "Invalid credentials" });
+
+      const ok = await bcrypt.compare(password, user.hash);
+      if (!ok)
+         return res
+            .status(401)
+            .json({ success: false, message: "Invalid credentials" });
+
+      const token = signToken(user);
+      return res.json({ success: true, user: publicUser(user), token });
+   } catch (e) {
+      return res
+         .status(400)
+         .json({ success: false, message: e.message || "Bad request" });
+   }
+});
+
+// POST /api/auth/logout
+app.post("/api/auth/logout", (_req, res) => {
+   // With stateless JWTs, logout is client-side token deletion.
+   return res.json({ success: true });
+});
+
+// Optional: GET /api/auth/me to verify token
+app.get("/api/auth/me", (req, res) => {
+   const auth = req.headers.authorization || "";
+   const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
+   if (!token)
+      return res.status(401).json({ success: false, message: "Missing token" });
+
+   try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET || "dev-secret");
+      // Find user by email
+      const user = users.get((decoded.email || "").toLowerCase());
+      if (!user)
+         return res
+            .status(404)
+            .json({ success: false, message: "User not found" });
+      return res.json({ success: true, user: publicUser(user) });
+   } catch (e) {
+      return res.status(401).json({ success: false, message: "Invalid token" });
+   }
+});
+
 // 🧠 AI Rewrite Endpoint
 const rewriteSchema = z.object({
    sentence: z.string().min(1).max(15000000),
@@ -106,5 +222,5 @@ app.post("/upload/image", upload.single("file"), async (req, res) => {
 
 const port = process.env.PORT || 5000;
 app.listen(port, "0.0.0.0", () =>
-   console.log("API running on http://0.0.0.0:${port}")
+   console.log(`API running on http://0.0.0.0:${port}`)
 );

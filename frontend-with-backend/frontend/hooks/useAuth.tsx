@@ -1,137 +1,225 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import React, {
+   createContext,
+   useContext,
+   useState,
+   useEffect,
+   ReactNode,
+} from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { Platform } from "react-native";
+import Constants from "expo-constants";
 
+// ----------------------
+// TYPES
+// ----------------------
 interface User {
-  id: string;
-  name: string;
-  email: string;
-  createdAt: string;
+   id: string;
+   name: string;
+   email: string;
+   createdAt: string;
 }
 
 interface AuthContextType {
-  user: User | null;
-  isLoading: boolean;
-  login: (email: string, password: string) => Promise<boolean>;
-  register: (name: string, email: string, password: string) => Promise<boolean>;
-  logout: () => Promise<void>;
+   user: User | null;
+   isLoading: boolean;
+   login: (email: string, password: string) => Promise<boolean>;
+   register: (
+      name: string,
+      email: string,
+      password: string
+   ) => Promise<boolean>;
+   logout: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const AUTH_STORAGE_KEY = 'easyread.user';
-const USERS_STORAGE_KEY = 'easyread.users';
+// ----------------------
+// API URL HANDLING
+// ----------------------
+function getDevHost() {
+   // Try to detect Metro bundler host
+   const uri =
+      (Constants.expoConfig?.hostUri ||
+         Constants.manifest?.debuggerHost ||
+         "") + "";
+   const host = uri.split(":")[0];
 
+   if (host) return host;
+
+   // Fallbacks
+   if (Platform.OS === "android") return "10.0.2.2";
+   if (Platform.OS === "ios") return "127.0.0.1";
+   return "localhost";
+}
+
+// OPTIONAL: override for physical device
+const LAN_IP = process.env.EXPO_PUBLIC_LAN_IP;
+
+const DEV_HOST = LAN_IP || getDevHost();
+
+// ✅ Final computed base URL
+export const API_URL = __DEV__
+   ? `http://${DEV_HOST}:5000/api/auth`
+   : "https://your-production-url.com/api/auth";
+
+// ----------------------
+// STORAGE KEYS
+// ----------------------
+const TOKEN_STORAGE_KEY = "easyread.token";
+const USER_STORAGE_KEY = "easyread.user";
+
+// ----------------------
+// PROVIDER
+// ----------------------
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+   const [user, setUser] = useState<User | null>(null);
+   const [isLoading, setIsLoading] = useState(true);
 
-  // Load user from storage on mount
-  useEffect(() => {
-    loadUser();
-  }, []);
+   useEffect(() => {
+      loadUser();
+   }, []);
 
-  const loadUser = async () => {
-    try {
-      const userData = await AsyncStorage.getItem(AUTH_STORAGE_KEY);
-      if (userData) {
-        setUser(JSON.parse(userData));
+   const loadUser = async () => {
+      try {
+         // clean old local-user storage (from your original implementation)
+         await AsyncStorage.removeItem("easyread.users");
+
+         const token = await AsyncStorage.getItem(TOKEN_STORAGE_KEY);
+         const userData = await AsyncStorage.getItem(USER_STORAGE_KEY);
+
+         if (token && userData) {
+            setUser(JSON.parse(userData));
+         }
+      } catch (err) {
+         console.error("Failed to load user:", err);
+      } finally {
+         setIsLoading(false);
       }
-    } catch (error) {
-      console.error('Failed to load user:', error);
-    } finally {
-      setIsLoading(false);
-    }
-  };
+   };
 
-  const register = async (name: string, email: string, password: string): Promise<boolean> => {
-    try {
-      // Get existing users
-      const usersData = await AsyncStorage.getItem(USERS_STORAGE_KEY);
-      const users = usersData ? JSON.parse(usersData) : [];
+   // ----------------------
+   // REGISTER
+   // ----------------------
+   const register = async (
+      name: string,
+      email: string,
+      password: string
+   ): Promise<boolean> => {
+      try {
+         console.log("Attempting registration...", { name, email });
+         console.log("API URL:", `${API_URL}/register`);
 
-      // Check if email already exists
-      const existingUser = users.find((u: any) => u.email.toLowerCase() === email.toLowerCase());
-      if (existingUser) {
-        return false; // Email already registered
+         const response = await fetch(`${API_URL}/register`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name, email, password }),
+         });
+
+         console.log("Status:", response.status);
+         const data = await response.json();
+         console.log("Response:", data);
+
+         if (data.success && data.user && data.token) {
+            await AsyncStorage.setItem(TOKEN_STORAGE_KEY, data.token);
+            await AsyncStorage.setItem(
+               USER_STORAGE_KEY,
+               JSON.stringify(data.user)
+            );
+            setUser(data.user);
+            return true;
+         }
+
+         console.log("Registration failed:", data.message);
+         return false;
+      } catch (err) {
+         console.error("Registration network error:", err);
+         return false;
       }
+   };
 
-      // Create new user
-      const newUser: User = {
-        id: Date.now().toString(),
-        name: name.trim(),
-        email: email.toLowerCase().trim(),
-        createdAt: new Date().toISOString(),
-      };
+   // ----------------------
+   // LOGIN
+   // ----------------------
+   const login = async (email: string, password: string): Promise<boolean> => {
+      try {
+         console.log("Attempting login...", { email });
+         console.log("API URL:", `${API_URL}/login`);
 
-      // Store password (in production, this would be hashed on backend)
-      const userWithPassword = { ...newUser, password };
+         const response = await fetch(`${API_URL}/login`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email, password }),
+         });
 
-      // Save to users list
-      users.push(userWithPassword);
-      await AsyncStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(users));
+         console.log("Status:", response.status);
+         const data = await response.json();
+         console.log("Response:", data);
 
-      // Set as current user
-      await AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(newUser));
-      setUser(newUser);
+         if (data.success && data.user && data.token) {
+            await AsyncStorage.setItem(TOKEN_STORAGE_KEY, data.token);
+            await AsyncStorage.setItem(
+               USER_STORAGE_KEY,
+               JSON.stringify(data.user)
+            );
+            setUser(data.user);
+            return true;
+         }
 
-      return true;
-    } catch (error) {
-      console.error('Registration failed:', error);
-      return false;
-    }
-  };
-
-  const login = async (email: string, password: string): Promise<boolean> => {
-    try {
-      // Get all users
-      const usersData = await AsyncStorage.getItem(USERS_STORAGE_KEY);
-      const users = usersData ? JSON.parse(usersData) : [];
-
-      // Find user with matching credentials
-      const foundUser = users.find(
-        (u: any) => 
-          u.email.toLowerCase() === email.toLowerCase().trim() && 
-          u.password === password
-      );
-
-      if (!foundUser) {
-        return false; // Invalid credentials
+         console.log("Login failed:", data.message);
+         return false;
+      } catch (err) {
+         console.error("Login network error:", err);
+         return false;
       }
+   };
 
-      // Remove password before storing in current user
-      const { password: _, ...userWithoutPassword } = foundUser;
-      
-      await AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(userWithoutPassword));
-      setUser(userWithoutPassword);
+   // ----------------------
+   // LOGOUT
+   // ----------------------
+   const logout = async () => {
+      try {
+         console.log("Logout triggered");
 
-      return true;
-    } catch (error) {
-      console.error('Login failed:', error);
-      return false;
-    }
-  };
+         const token = await AsyncStorage.getItem(TOKEN_STORAGE_KEY);
 
-  const logout = async () => {
-    try {
-      await AsyncStorage.removeItem(AUTH_STORAGE_KEY);
-      setUser(null);
-    } catch (error) {
-      console.error('Logout failed:', error);
-    }
-  };
+         if (token) {
+            const response = await fetch(`${API_URL}/logout`, {
+               method: "POST",
+               headers: {
+                  Authorization: `Bearer ${token}`,
+                  "Content-Type": "application/json",
+               },
+            });
 
-  return (
-    <AuthContext.Provider value={{ user, isLoading, login, register, logout }}>
-      {children}
-    </AuthContext.Provider>
-  );
+            console.log("Logout response:", response.status);
+         }
+
+         await AsyncStorage.removeItem(TOKEN_STORAGE_KEY);
+         await AsyncStorage.removeItem(USER_STORAGE_KEY);
+         setUser(null);
+
+         console.log("Token + user cleared locally");
+      } catch (err) {
+         console.error("Logout failed:", err);
+      }
+   };
+
+   return (
+      <AuthContext.Provider
+         value={{ user, isLoading, login, register, logout }}
+      >
+         {children}
+      </AuthContext.Provider>
+   );
 }
 
+// ----------------------
+// HOOK
+// ----------------------
 export function useAuth() {
-  const context = useContext(AuthContext);
-  if (context === undefined) {
-    throw new Error('useAuth must be used within an AuthProvider');
-  }
-  return context;
+   const ctx = useContext(AuthContext);
+   if (ctx === undefined) {
+      throw new Error("useAuth must be used within an AuthProvider");
+   }
+   return ctx;
 }
-
