@@ -231,6 +231,14 @@ app.get("/api/users/stats", authenticate, (_req, res) => {
    });
 });
 
+// GET /api/my-documents
+app.get("/api/my-documents", authenticate, (req, res) => {
+   const docs = db
+      .prepare("SELECT id, filename, uploadedAt, contentType FROM documents WHERE userId = ? ORDER BY uploadedAt DESC")
+      .all(req.user.id);
+   res.json({ success: true, count: docs.length, documents: docs });
+});
+
 // GET /api/admin/export
 app.get("/api/admin/export", (_req, res) => {
    // :contentReference[oaicite:29]{index=29}
@@ -303,11 +311,16 @@ app.post("/ai/rewrite", async (req, res) => {
 });
 
 // 📄 PDF → Text
-app.post("/upload/pdf", upload.single("file"), async (req, res) => {
+app.post("/upload/pdf", authenticate, upload.single("file"), async (req, res) => {
    try {
       if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+
       const data = await pdfParse(req.file.buffer);
       const text = (data.text || "").trim();
+
+      // Save to DB
+      saveDocument(req.user.id, req.file.originalname, req.file.mimetype);
+
       res.json({ text: clamp(text) });
    } catch {
       res.status(500).json({ error: "Failed to parse PDF" });
