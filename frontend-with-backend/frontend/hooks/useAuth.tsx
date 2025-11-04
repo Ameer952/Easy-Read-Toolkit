@@ -18,8 +18,9 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const AUTH_STORAGE_KEY = 'easyread.user';
-const USERS_STORAGE_KEY = 'easyread.users';
+const API_URL = 'http://192.168.0.51:5000/api/auth';
+const TOKEN_STORAGE_KEY = 'easyread.token';
+const USER_STORAGE_KEY = 'easyread.user';
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
@@ -32,8 +33,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const loadUser = async () => {
     try {
-      const userData = await AsyncStorage.getItem(AUTH_STORAGE_KEY);
-      if (userData) {
+      // Clear old storage keys from previous local-only version
+      await AsyncStorage.removeItem('easyread.users');
+      
+      const token = await AsyncStorage.getItem(TOKEN_STORAGE_KEY);
+      const userData = await AsyncStorage.getItem(USER_STORAGE_KEY);
+      
+      if (token && userData) {
         setUser(JSON.parse(userData));
       }
     } catch (error) {
@@ -45,79 +51,87 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const register = async (name: string, email: string, password: string): Promise<boolean> => {
     try {
-      // Get existing users
-      const usersData = await AsyncStorage.getItem(USERS_STORAGE_KEY);
-      const users = usersData ? JSON.parse(usersData) : [];
+      console.log('Attempting registration...', { name, email });
+      console.log('API URL:', `${API_URL}/register`);
+      
+      const response = await fetch(`${API_URL}/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, email, password })
+      });
 
-      // Check if email already exists
-      const existingUser = users.find((u: any) => u.email.toLowerCase() === email.toLowerCase());
-      if (existingUser) {
-        return false; // Email already registered
+      console.log('Response status:', response.status);
+      const data = await response.json();
+      console.log('Response data:', data);
+
+      if (data.success && data.user && data.token) {
+        await AsyncStorage.setItem(TOKEN_STORAGE_KEY, data.token);
+        await AsyncStorage.setItem(USER_STORAGE_KEY, JSON.stringify(data.user));
+        setUser(data.user);
+        return true;
       }
 
-      // Create new user
-      const newUser: User = {
-        id: Date.now().toString(),
-        name: name.trim(),
-        email: email.toLowerCase().trim(),
-        createdAt: new Date().toISOString(),
-      };
-
-      // Store password (in production, this would be hashed on backend)
-      const userWithPassword = { ...newUser, password };
-
-      // Save to users list
-      users.push(userWithPassword);
-      await AsyncStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(users));
-
-      // Set as current user
-      await AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(newUser));
-      setUser(newUser);
-
-      return true;
+      console.log('Registration failed:', data.message || 'Unknown error');
+      return false;
     } catch (error) {
-      console.error('Registration failed:', error);
+      console.error('Registration network error:', error);
       return false;
     }
   };
 
   const login = async (email: string, password: string): Promise<boolean> => {
     try {
-      // Get all users
-      const usersData = await AsyncStorage.getItem(USERS_STORAGE_KEY);
-      const users = usersData ? JSON.parse(usersData) : [];
+      console.log('Attempting login...', { email });
+      console.log('API URL:', `${API_URL}/login`);
+      
+      const response = await fetch(`${API_URL}/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+      });
 
-      // Find user with matching credentials
-      const foundUser = users.find(
-        (u: any) => 
-          u.email.toLowerCase() === email.toLowerCase().trim() && 
-          u.password === password
-      );
+      console.log('Response status:', response.status);
+      const data = await response.json();
+      console.log('Response data:', data);
 
-      if (!foundUser) {
-        return false; // Invalid credentials
+      if (data.success && data.user && data.token) {
+        await AsyncStorage.setItem(TOKEN_STORAGE_KEY, data.token);
+        await AsyncStorage.setItem(USER_STORAGE_KEY, JSON.stringify(data.user));
+        setUser(data.user);
+        return true;
       }
 
-      // Remove password before storing in current user
-      const { password: _, ...userWithoutPassword } = foundUser;
-      
-      await AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(userWithoutPassword));
-      setUser(userWithoutPassword);
-
-      return true;
+      console.log('Login failed:', data.message || 'Unknown error');
+      return false;
     } catch (error) {
-      console.error('Login failed:', error);
+      console.error('Login network error:', error);
       return false;
     }
   };
 
   const logout = async () => {
-    try {
-      await AsyncStorage.removeItem(AUTH_STORAGE_KEY);
-      setUser(null);
-    } catch (error) {
-      console.error('Logout failed:', error);
+  try {
+    console.log('Logout triggered');
+    const token = await AsyncStorage.getItem(TOKEN_STORAGE_KEY);
+
+    if (token) {
+      const response = await fetch(`${API_URL}/logout`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      console.log('Logout response:', response.status);
     }
+
+    await AsyncStorage.removeItem(TOKEN_STORAGE_KEY);
+    await AsyncStorage.removeItem(USER_STORAGE_KEY);
+    setUser(null);
+    console.log('Local user and token removed');
+  } catch (error) {
+    console.error('Logout failed:', error);
+  } 
   };
 
   return (
