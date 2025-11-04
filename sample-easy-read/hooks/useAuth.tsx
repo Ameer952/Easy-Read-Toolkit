@@ -18,7 +18,7 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const API_URL = 'http://192.168.86.37:8000/api/auth';
+const API_URL = 'http://localhost:8000/api/auth';
 const TOKEN_STORAGE_KEY = 'easyread.token';
 const USER_STORAGE_KEY = 'easyread.user';
 
@@ -110,25 +110,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = async () => {
-    try {
-      const token = await AsyncStorage.getItem(TOKEN_STORAGE_KEY);
-      
-      if (token) {
-        await fetch(`${API_URL}/logout`, {
-          method: 'POST',
-          headers: { 
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'application/json'
-          }
-        });
-      }
+  try {
+    console.log('Logout triggered');
+    const token = await AsyncStorage.getItem(TOKEN_STORAGE_KEY);
 
-      await AsyncStorage.removeItem(TOKEN_STORAGE_KEY);
-      await AsyncStorage.removeItem(USER_STORAGE_KEY);
-      setUser(null);
-    } catch (error) {
-      console.error('Logout failed:', error);
+    if (token) {
+      const response = await fetch(`${API_URL}/logout`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      console.log('Logout response:', response.status);
     }
+
+    await AsyncStorage.removeItem(TOKEN_STORAGE_KEY);
+    await AsyncStorage.removeItem(USER_STORAGE_KEY);
+    setUser(null);
+    console.log('Local user and token removed');
+  } catch (error) {
+    console.error('Logout failed:', error);
+  } 
   };
 
   return (

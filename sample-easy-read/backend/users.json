@@ -6,5 +6,21 @@
     "password": "693e73cca443a83ffe9eb3a70f45a43fffb8a7cec8108f14306bec56fcfe4f1d",
     "createdAt": "2025-11-04T00:44:30.198Z",
     "updatedAt": "2025-11-04T00:44:30.198Z"
+  },
+  "user_1762223698761": {
+    "id": "user_1762223698761",
+    "name": "Test User",
+    "email": "test@example.com",
+    "password": "$2b$10$NucehDC/5atibDTRzN/XLuHLHKTVwd0jm2zaYnEDmWpTKLcYDzHpS",
+    "createdAt": "2025-11-04T02:34:58.761Z",
+    "updatedAt": "2025-11-04T02:34:58.761Z"
+  },
+  "user_1762223780495": {
+    "id": "user_1762223780495",
+    "name": "Grace Madill",
+    "email": "gnmadill@gmail.com",
+    "password": "$2b$10$qyAExaGJ9X/egfqyFlmf7OSI09J6quia8P7tpPob7NW51Wduw88We",
+    "createdAt": "2025-11-04T02:36:20.495Z",
+    "updatedAt": "2025-11-04T02:36:20.495Z"
   }
 }

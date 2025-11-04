@@ -1,4 +1,4 @@
-import { StyleSheet, ScrollView, TouchableOpacity, Alert } from 'react-native';
+import { StyleSheet, ScrollView, TouchableOpacity, Alert, Platform } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 
@@ -24,6 +24,12 @@ export default function ProfileScreen() {
   };
 
   const handleLogout = () => {
+    console.log('Logout prompt launched');
+    if (Platform.OS === 'web') {
+      const confirmed = window.confirm('Are you sure you want to logout?');
+      if (confirmed) logout();
+      return;
+    }
     Alert.alert(
       'Logout',
       'Are you sure you want to logout?',
