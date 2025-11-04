@@ -1,8 +1,7 @@
 import React, { useState } from 'react';
 import { StyleSheet, TouchableOpacity, ScrollView, Alert, Share } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
-import * as FileSystem from 'expo-file-system';
-import { WebView, WebViewMessageEvent } from 'react-native-webview';
+import * as FileSystem from 'expo-file-system/legacy';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
 
@@ -12,17 +11,19 @@ import { IconSymbol } from '@/components/ui/IconSymbol';
 import { Colors } from '@/constants/Colors';
 import { useColorScheme } from '@/hooks/useColorScheme';
 
+// API Configuration
+const API_BASE_URL = "http://192.168.1.110:5050";
+
 export default function PDFUploadScreen() {
   const colorScheme = useColorScheme();
   const router = useRouter();
   const [selectedFile, setSelectedFile] = useState<any>(null);
   const [extractedText, setExtractedText] = useState('');
   const [loading, setLoading] = useState(false);
-  const [pdfBase64, setPdfBase64] = useState<string | null>(null);
+  const [progress, setProgress] = useState("");
 
   const pickDocument = async () => {
     try {
-      // Show loading while picking
       setLoading(true);
       
       const result = await DocumentPicker.getDocumentAsync({
@@ -36,7 +37,7 @@ export default function PDFUploadScreen() {
         console.log('Selected file:', file);
         
         // Validate file size (max 10MB)
-        const maxSize = 10 * 1024 * 1024; // 10MB
+        const maxSize = 10 * 1024 * 1024;
         if (file.size && file.size > maxSize) {
           Alert.alert('File Too Large', 'Please select a PDF file smaller than 10MB.');
           setLoading(false);
@@ -45,20 +46,6 @@ export default function PDFUploadScreen() {
         
         setSelectedFile(file);
         setExtractedText('');
-        
-        // Read file as base64
-        if (file.uri) {
-          try {
-            const base64 = await FileSystem.readAsStringAsync(file.uri, {
-              encoding: 'base64',
-            });
-            setPdfBase64(base64);
-            console.log('PDF loaded successfully, size:', base64.length);
-          } catch (error) {
-            console.log('Error reading file:', error);
-            Alert.alert('Error', 'Failed to read PDF file. Please make sure the file is not corrupted.');
-          }
-        }
       } else {
         console.log('Document picker canceled');
       }
@@ -70,66 +57,57 @@ export default function PDFUploadScreen() {
     }
   };
 
-  const extractTextFromPDF = () => {
-    if (!pdfBase64) {
-      Alert.alert('No PDF', 'Please select a PDF file first.');
-      return;
-    }
-    setLoading(true);
-  };
-
-  const htmlForPDFExtraction = (base64: string) => `<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-  </head>
-  <body>
-    <script>
-      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-      
-      (async () => {
-        try {
-          const pdfData = atob('${base64}');
-          const loadingTask = pdfjsLib.getDocument({ data: pdfData });
-          const pdf = await loadingTask.promise;
-          
-          let fullText = '';
-          
-          for (let i = 1; i <= pdf.numPages; i++) {
-            const page = await pdf.getPage(i);
-            const textContent = await page.getTextContent();
-            const pageText = textContent.items.map(item => item.str).join(' ');
-            fullText += pageText + '\\n\\n';
-          }
-          
-          window.ReactNativeWebView.postMessage(JSON.stringify({ 
-            ok: true, 
-            text: fullText.trim() 
-          }));
-        } catch (err) {
-          window.ReactNativeWebView.postMessage(JSON.stringify({ 
-            ok: false, 
-            error: String(err) 
-          }));
-        }
-      })();
-    </script>
-  </body>
-</html>`;
-
-  const onPDFMessage = (event: WebViewMessageEvent) => {
-    setLoading(false);
+  const extractTextFromPDF = async (fileUri: string) => {
     try {
-      const data = JSON.parse(event.nativeEvent.data);
-      if (data.ok) {
-        setExtractedText(data.text || '');
-      } else {
-        Alert.alert('Extraction Error', data.error || 'Unknown error');
+      setLoading(true);
+      setProgress("Uploading PDF...");
+
+      const formData = new FormData();
+      formData.append("file", {
+        uri: fileUri,
+        type: "application/pdf",
+        name: "upload.pdf",
+      } as any);
+
+      console.log(`Sending request to: ${API_BASE_URL}/upload/pdf`);
+
+      const response = await fetch(`${API_BASE_URL}/upload/pdf`, {
+        method: "POST",
+        body: formData,
+        headers: {
+          'Accept': 'application/json',
+        },
+      });
+
+      console.log('Response status:', response.status);
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `Server error: ${response.status}`);
       }
-    } catch (e) {
-      Alert.alert('Extraction Error', 'Failed to parse extraction result.');
+
+      const data = await response.json();
+      console.log('Extraction successful, text length:', data.text?.length || 0);
+      
+      setExtractedText(data.text || "No text found.");
+      setProgress("");
+      
+      Alert.alert('Success', 'Text extracted successfully!');
+    } catch (error: any) {
+      console.error("Extraction failed:", error);
+      
+      let errorMessage = "Failed to extract text.";
+      if (error.message.includes('Network request failed')) {
+        errorMessage = `Cannot connect to server at ${API_BASE_URL}. Make sure:\n\n1. Server is running\n2. Your phone and computer are on the same WiFi\n3. Firewall allows port 5050`;
+      } else if (error.message) {
+        errorMessage = error.message;
+      }
+      
+      Alert.alert('Error', errorMessage);
+      setExtractedText("");
+    } finally {
+      setLoading(false);
+      setProgress("");
     }
   };
 
@@ -195,6 +173,7 @@ export default function PDFUploadScreen() {
         <TouchableOpacity 
           style={[styles.uploadButton, { backgroundColor: Colors[colorScheme ?? 'light'].buttonBackground }]}
           onPress={pickDocument}
+          disabled={loading}
         >
           <IconSymbol name="doc.badge.plus" size={24} color="#fff" />
           <ThemedText style={styles.uploadButtonText}>
@@ -211,9 +190,7 @@ export default function PDFUploadScreen() {
               <ThemedText style={styles.fileSize}>
                 {selectedFile.size ? `${(selectedFile.size / 1024 / 1024).toFixed(2)} MB` : 'Unknown size'}
               </ThemedText>
-              <ThemedText style={styles.fileStatus}>
-                {pdfBase64 ? '✅ Ready for extraction' : '⚠️ Loading file...'}
-              </ThemedText>
+              <ThemedText style={styles.fileStatus}>✅ Ready for extraction</ThemedText>
             </ThemedView>
           </ThemedView>
         )}
@@ -226,11 +203,21 @@ export default function PDFUploadScreen() {
           </ThemedView>
         )}
 
+        {/* Progress Indicator */}
+        {loading && progress && (
+          <ThemedView style={styles.loadingContainer}>
+            <IconSymbol name="arrow.clockwise" size={24} color={Colors[colorScheme ?? 'light'].accent} />
+            <ThemedText style={styles.loadingText}>{progress}</ThemedText>
+          </ThemedView>
+        )}
+
         {/* Extract Button */}
         {selectedFile && !extractedText && (
           <TouchableOpacity 
-            style={[styles.extractButton, { backgroundColor: Colors[colorScheme ?? 'light'].buttonBackground }]}
-            onPress={extractTextFromPDF}
+            style={[styles.extractButton, { 
+              backgroundColor: loading ? '#999' : Colors[colorScheme ?? 'light'].buttonBackground 
+            }]}
+            onPress={() => extractTextFromPDF(selectedFile.uri)}
             disabled={loading}
           >
             <IconSymbol name="text.viewfinder" size={20} color="#fff" />
@@ -262,15 +249,6 @@ export default function PDFUploadScreen() {
               <ThemedText style={styles.extractedText}>{extractedText}</ThemedText>
             </ThemedView>
           </ThemedView>
-        )}
-
-        {loading && pdfBase64 && (
-          <WebView
-            originWhitelist={["*"]}
-            source={{ html: htmlForPDFExtraction(pdfBase64) }}
-            onMessage={onPDFMessage}
-            style={{ height: 0, width: 0, opacity: 0 }}
-          />
         )}
       </ScrollView>
     </ThemedView>
@@ -317,7 +295,7 @@ const styles = StyleSheet.create({
     padding: 16,
     backgroundColor: '#F8F9FA',
     borderRadius: 12,
-    marginTop: 16,
+    marginBottom: 16,
   },
   loadingText: { fontSize: 14, opacity: 0.7 },
   extractButton: {
@@ -359,4 +337,3 @@ const styles = StyleSheet.create({
   },
   extractedText: { fontSize: 14, lineHeight: 20, color: '#333' },
 });
-

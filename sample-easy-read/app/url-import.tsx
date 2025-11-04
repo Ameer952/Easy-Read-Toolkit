@@ -10,6 +10,8 @@ import { IconSymbol } from '@/components/ui/IconSymbol';
 import { Colors } from '@/constants/Colors';
 import { useColorScheme } from '@/hooks/useColorScheme';
 
+const API_BASE_URL = "http://192.168.1.110:5050";
+
 export default function UrlImportScreen() {
   const colorScheme = useColorScheme();
   const router = useRouter();

@@ -20,7 +20,7 @@ app.use(rateLimit({ windowMs: 60_000, max: 60 }));
 
 // Uploads kept in memory
 const upload = multer({ storage: multer.memoryStorage() });
-const clamp = (s, max = 20000) => (s && s.length > max ? s.slice(0, max) : s);
+const clamp = (s, max = 500000) => (s && s.length > max ? s.slice(0, max) : s);
 
 // Ensure tmp directory exists
 const tmpDir = path.join(__dirname, "tmp");
@@ -80,54 +80,69 @@ Return only the rewritten text.`;
 
 // 📄 PDF → Text (using Python OCR)
 app.post("/upload/pdf", upload.single("file"), async (req, res) => {
-  try {
-    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+try {
+if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
-    const tmpPdfPath = path.join(tmpDir, `${Date.now()}.pdf`);
-    const tmpOutputPath = path.join(tmpDir, `${Date.now()}.txt`);
-    
-    fs.writeFileSync(tmpPdfPath, req.file.buffer);
+// Ensure output folders exist  
+const tmpDir = path.join(__dirname, "tmp");  
+const outputFolder = path.join(__dirname, "ocr-output");  
+const pageFolder = path.join(outputFolder, "pages");  
+[tmpDir, outputFolder, pageFolder].forEach(dir => {  
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });  
+});  
 
-const pythonScript = path.join(__dirname, "backend", "ocr-pdf.py");
+const tmpPdfPath = path.join(tmpDir, `${Date.now()}.pdf`);  
+const tmpOutputPath = path.join(outputFolder, `${Date.now()}.txt`);  
+fs.writeFileSync(tmpPdfPath, req.file.buffer);  
 
-const py = spawn("python", [
+const pythonScript = path.join(__dirname, "ocr-pdf.py");  
+const pythonCmd = process.env.PYTHON_CMD || "python";  
+
+const py = spawn(pythonCmd, [  
   pythonScript,  
-  "--pdf", tmpPdfPath,
-  "--output", tmpOutputPath
-]);
+  "--pdf", tmpPdfPath,  
+  "--output", tmpOutputPath,  
+  "--save-pages"  // ensure Python script saves per-page text  
+]);  
 
-    let errorOutput = "";
-    py.stderr.on("data", (data) => {
-      errorOutput += data.toString();
-      console.error("Python stderr:", data.toString());
-    });
+let errorOutput = "";  
+py.stderr.on("data", (data) => {  
+  errorOutput += data.toString();  
+  console.error("Python stderr:", data.toString());  
+});  
 
-    py.on("close", (code) => {
-      // Clean up temp PDF
-      if (fs.existsSync(tmpPdfPath)) {
-        fs.unlinkSync(tmpPdfPath);
-      }
+py.on("close", (code) => {  
+  // Clean up temp PDF  
+  if (fs.existsSync(tmpPdfPath)) fs.unlinkSync(tmpPdfPath);  
 
-      if (code !== 0) {
-        console.error("OCR failed with code:", code, errorOutput);
-        return res.status(500).json({ error: "OCR failed", detail: errorOutput });
-      }
+  if (code !== 0) {  
+    console.error("OCR failed with code:", code, errorOutput);  
+    return res.status(500).json({ error: "OCR failed", detail: errorOutput });  
+  }  
 
-      // Read the output file
-      if (!fs.existsSync(tmpOutputPath)) {
-        return res.status(500).json({ error: "OCR produced no output" });
-      }
+  // Read combined output  
+  if (!fs.existsSync(tmpOutputPath)) {  
+    return res.status(500).json({ error: "OCR produced no output" });  
+  }  
 
-      const text = fs.readFileSync(tmpOutputPath, "utf8");
-      fs.unlinkSync(tmpOutputPath); // Clean up output file
-      
-      res.json({ text: clamp(text) });
-    });
-  } catch (err) {
-    console.error("PDF upload error:", err);
-    res.status(500).json({ error: "Failed to run OCR" });
-  }
+  const text = fs.readFileSync(tmpOutputPath, "utf8");  
+
+  // Also copy per-page files from ./output if the Python script saved them  
+  const savedPages = [];  
+  if (fs.existsSync(pageFolder)) {  
+    const pageFiles = fs.readdirSync(pageFolder).filter(f => f.endsWith("_ocr.txt"));  
+    pageFiles.forEach(file => savedPages.push(path.join("ocr-output/pages", file)));  
+  }  
+
+  res.json({ text: clamp(text, 50000), savedPages });  
+});  
+
+} catch (err) {
+console.error("PDF upload error:", err);
+res.status(500).json({ error: "Failed to run OCR" });
+}
 });
+
 
 // 🖼️ Image OCR → Text
 app.post("/upload/image", upload.single("file"), async (req, res) => {
@@ -142,5 +157,5 @@ app.post("/upload/image", upload.single("file"), async (req, res) => {
 });
 
 // Start the server
-const port = process.env.PORT || 5000;
-app.listen(port, () => console.log(`API up on :${port}`));
+const port = process.env.PORT || 5050
+app.listen(port, "0.0.0.0", () => console.log(`API up on :${port}`));
