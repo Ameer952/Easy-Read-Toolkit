@@ -1,6 +1,7 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import jwt from 'jsonwebtoken';
+import bcrypt from 'bcrypt';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -63,12 +64,13 @@ const saveUsers = (users: Record<string, User>): void => {
   }
 };
 
-const hashPassword = (password: string): string => {
-  return crypto.createHash('sha256').update(password).digest('hex');
+const hashPassword = async (password: string): Promise<string> => {
+  const saltRounds = 10;
+  return await bcrypt.hash(password, saltRounds);
 };
 
-const verifyPassword = (password: string, hashedPassword: string): boolean => {
-  return hashPassword(password) === hashedPassword;
+const verifyPassword = async (password: string, hashedPassword: string): Promise<boolean> => {
+  return await bcrypt.compare(password, hashedPassword);
 };
 
 const createToken = (userId: string, email: string): string => {
@@ -130,7 +132,7 @@ app.get('/', (req: Request, res: Response) => {
 });
 
 // Register
-app.post('/api/auth/register', (req: Request, res: Response) => {
+app.post('/api/auth/register', async (req: Request, res: Response) => {
   try {
     const { name, email, password } = req.body;
 
@@ -165,7 +167,7 @@ app.post('/api/auth/register', (req: Request, res: Response) => {
       id: userId,
       name: name.trim(),
       email: email.toLowerCase().trim(),
-      password: hashPassword(password),
+      password: await hashPassword(password),
       createdAt: now,
       updatedAt: now
     };
@@ -187,7 +189,7 @@ app.post('/api/auth/register', (req: Request, res: Response) => {
 });
 
 // Login
-app.post('/api/auth/login', (req: Request, res: Response) => {
+app.post('/api/auth/login', async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body;
 
@@ -201,7 +203,7 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
       u => u.email.toLowerCase() === email.toLowerCase()
     );
 
-    if (!user || !verifyPassword(password, user.password)) {
+    if (!user || !(await verifyPassword(password, user.password))) {
       res.status(401).json({ success: false, message: 'Invalid email or password' });
       return;
     }
