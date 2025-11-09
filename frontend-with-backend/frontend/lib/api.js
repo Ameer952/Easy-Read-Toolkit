@@ -73,7 +73,7 @@ export async function fetchUserDocuments(authToken) {
 
 export async function createUserDocument(
    authToken,
-   { title, content, type, sourceTag, fileName, url }
+   { title, content, type, sourceTag, fileName, fileUrl }
 ) {
    return requestWithAuth(
       "/api/documents",
@@ -86,7 +86,7 @@ export async function createUserDocument(
             type,
             sourceTag,
             fileName,
-            url,
+            fileUrl, // device-side PDF path for viewers (iOS / Android)
          }),
       },
       authToken

@@ -328,7 +328,9 @@ export default function TranslatorScreen() {
        <html><head><meta charset="utf-8" />
        <style>
          body{
-           font-family:-apple-system,Roboto,Arial,sans-serif;
+           font-family: system-ui, -apple-system, BlinkMacSystemFont,
+                        "SF Pro Text", "SF Pro Display",
+                        Roboto, "Segoe UI", Arial, sans-serif;
            padding:24px;
            font-size:${fontSize}px;
            line-height:${lineHeightPx}px;
@@ -363,7 +365,7 @@ export default function TranslatorScreen() {
             type: "pdf",
             sourceTag: "translator",
             fileName,
-            url: dest,
+            fileUrl: dest,
          });
 
          setHasSaved(true);

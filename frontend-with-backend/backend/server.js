@@ -380,7 +380,7 @@ const documentSchema = z.object({
    type: z.string().min(1),
    sourceTag: z.string().optional(),
    fileName: z.string().optional(),
-   fileUrl: z.string().optional(), // <-- allow client to store local device path for PDFs
+   fileUrl: z.string().optional(), // device-side PDF path
 });
 
 app.post("/api/documents", authenticate, (req, res) => {
@@ -491,12 +491,9 @@ app.post(
          const text = (data.text || "").trim();
          const original = req.file.originalname || "Uploaded PDF";
 
-         // (Optional) store uploaded pdf on server filesystem
-         // This path is server-local; clients cannot open it directly.
-         // We keep fileUrl null here to avoid implying it's device-accessible.
          const title = original;
          const fileName = original;
-         const fileUrl = null;
+         const fileUrl = null; // server-only; device PDFs are saved client-side
 
          const doc = createDocument(req.user.id, {
             title,

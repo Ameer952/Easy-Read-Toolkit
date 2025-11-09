@@ -8,7 +8,6 @@ import {
    NativeSyntheticEvent,
    NativeScrollEvent,
    Platform,
-   Linking,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter, useFocusEffect } from "expo-router";
@@ -16,12 +15,14 @@ import React, { useState, useCallback } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Sharing from "expo-sharing";
 import * as FS from "expo-file-system/legacy";
+import { printToFileAsync } from "expo-print";
 import { Ionicons } from "@expo/vector-icons";
 
 import { ThemedText } from "@/components/ThemedText";
 import { ThemedView } from "@/components/ThemedView";
 import { Colors } from "@/constants/Colors";
 import { useTheme } from "@/hooks/useTheme";
+import { useReaderTextStyle } from "@/hooks/useReaderPreferences";
 import { fetchUserDocuments, deleteUserDocument } from "../../lib/api";
 
 /* =========================================================
@@ -68,6 +69,12 @@ const getAuthToken = async () => {
    return null;
 };
 
+const isPdfDoc = (doc: Document) =>
+   doc.type === "pdf" || (doc.fileName ?? "").toLowerCase().endsWith(".pdf");
+
+const escapeHtml = (str: string) =>
+   str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
 /* =========================================================
    COMPONENT
    ========================================================= */
@@ -76,9 +83,11 @@ export default function DocumentsScreen() {
    const { theme } = useTheme();
    const insets = useSafeAreaInsets();
    const router = useRouter();
+   const { textStyle: readerTextStyle } = useReaderTextStyle();
 
    const [documents, setDocuments] = useState<Document[]>([]);
    const [previewDoc, setPreviewDoc] = useState<Document | null>(null);
+   const [fullDoc, setFullDoc] = useState<Document | null>(null);
    const [deleteTarget, setDeleteTarget] = useState<Document | null>(null);
 
    const [refreshing, setRefreshing] = useState(false);
@@ -98,17 +107,17 @@ export default function DocumentsScreen() {
             return;
          }
          const data = await fetchUserDocuments(token);
-         const apiDocs = data?.documents || [];
+         const apiDocs = (data?.documents || []) as any[];
 
-         const mapped: Document[] = apiDocs.map((d: any) => ({
+         const mapped: Document[] = apiDocs.map((d) => ({
             id: d.id,
             title: d.title,
             content: d.content,
             type: d.type,
             date: d.createdAt,
-            fileName: d.fileName,
-            sourceTag: d.sourceTag,
-            fileUrl: d.fileUrl ?? null, // MUST EXIST FOR PDF OPEN
+            fileName: d.fileName ?? undefined,
+            sourceTag: d.sourceTag ?? undefined,
+            fileUrl: d.fileUrl ?? undefined,
          }));
 
          setDocuments(mapped);
@@ -150,30 +159,105 @@ export default function DocumentsScreen() {
    };
 
    /* =========================================================
-     PDF OPEN LOGIC
+     OPEN DOCS (PREVIEW + PDF HANDLING)
      ========================================================= */
 
    const openDocument = (doc: Document) => {
-      const isPdf =
-         doc.type === "pdf" ||
-         (doc.fileName ?? "").toLowerCase().endsWith(".pdf");
-
-      if (isPdf && doc.fileUrl) {
-         if (Platform.OS === "ios") {
-            Linking.openURL(doc.fileUrl).catch(() => {
-               Alert.alert("Open Failed", "Could not open PDF.");
-            });
-            return;
-         } else {
-            router.push({
-               pathname: "/pdf-viewer",
-               params: { url: doc.fileUrl, title: doc.title },
-            });
-            return;
-         }
-      }
-
       setPreviewDoc(doc);
+   };
+
+   const openPdfFromDoc = async (doc: Document) => {
+      try {
+         let localPath = doc.fileUrl;
+
+         // If we have a stored path, check if file exists on this device
+         if (localPath) {
+            const info = await FS.getInfoAsync(localPath).catch(() => null);
+            if (!info?.exists) {
+               localPath = undefined;
+            }
+         }
+
+         // If no valid file on this device, recreate PDF from content
+         if (!localPath) {
+            if (!doc.content) {
+               Alert.alert(
+                  "PDF not available",
+                  "This PDF file is not available on this device."
+               );
+               return;
+            }
+
+            // Use reading preferences for size / line-height / alignment
+            const fontSize =
+               typeof readerTextStyle.fontSize === "number"
+                  ? readerTextStyle.fontSize
+                  : 16;
+            const lineHeightPx =
+               typeof readerTextStyle.lineHeight === "number"
+                  ? readerTextStyle.lineHeight
+                  : Math.round(fontSize * 1.5);
+            const textAlign =
+               (readerTextStyle.textAlign as
+                  | "left"
+                  | "center"
+                  | "right"
+                  | "justify") || "left";
+
+            // Hard-code same font stack as the app
+            const fontFamilyCSS =
+               'system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", Roboto, "Segoe UI", Arial, sans-serif';
+
+            const html = `
+              <html>
+                <head>
+                  <meta charset="utf-8" />
+                  <style>
+                    body {
+                      font-family: ${fontFamilyCSS};
+                      padding: 24px;
+                      font-size: ${fontSize}px;
+                      line-height: ${lineHeightPx}px;
+                      text-align: ${textAlign};
+                    }
+                    h1 {
+                      margin: 0 0 16px;
+                      font-size: ${fontSize + 4}px;
+                    }
+                    p {
+                      white-space: pre-wrap;
+                      margin-top: 12px;
+                    }
+                  </style>
+                </head>
+                <body>
+                  <h1>Easy Read</h1>
+                  <p>${escapeHtml(doc.content).replace(/\n/g, "<br/>")}</p>
+                </body>
+              </html>
+            `.trim();
+
+            const pdf = await printToFileAsync({ html });
+            localPath = pdf.uri;
+         }
+
+         router.push({
+            pathname: "/pdf-viewer",
+            params: { url: localPath, title: doc.title },
+         });
+      } catch (e: any) {
+         Alert.alert("Open Failed", String(e?.message || e));
+      }
+   };
+
+   const handleViewFull = async (doc: Document) => {
+      setPreviewDoc(null);
+
+      if (isPdfDoc(doc)) {
+         await openPdfFromDoc(doc);
+      } else {
+         setFullDoc(doc);
+      }
    };
 
    /* =========================================================
@@ -417,6 +501,198 @@ export default function DocumentsScreen() {
                </ThemedView>
             )}
          </ScrollView>
+
+         {/* Preview modal (tap document) */}
+         {previewDoc && (
+            <ThemedView style={styles.modalOverlay}>
+               <TouchableOpacity
+                  style={styles.modalBackdrop}
+                  activeOpacity={1}
+                  onPress={() => setPreviewDoc(null)}
+               />
+               <ThemedView
+                  style={[
+                     styles.modalCard,
+                     {
+                        backgroundColor: Colors[theme].surface,
+                        borderColor: Colors[theme].border,
+                     },
+                  ]}
+               >
+                  <ThemedText style={styles.modalTitle}>
+                     {previewDoc.title}
+                  </ThemedText>
+                  <ThemedText
+                     style={[
+                        styles.modalSubText,
+                        { color: Colors[theme].textSecondary },
+                     ]}
+                  >
+                     {typeLabelFor(previewDoc)} ·{" "}
+                     {formatDateTime(previewDoc.date)}
+                  </ThemedText>
+                  <ThemedText
+                     style={[
+                        styles.modalBody,
+                        { color: Colors[theme].textSecondary },
+                     ]}
+                  >
+                     {previewDoc.content.substring(0, 200)}...
+                  </ThemedText>
+
+                  <View style={styles.modalButtonRow}>
+                     <TouchableOpacity
+                        style={[
+                           styles.modalButton,
+                           { borderColor: Colors[theme].border },
+                        ]}
+                        onPress={() => setPreviewDoc(null)}
+                     >
+                        <ThemedText
+                           style={[
+                              styles.modalButtonText,
+                              { color: Colors[theme].text },
+                           ]}
+                        >
+                           Cancel
+                        </ThemedText>
+                     </TouchableOpacity>
+
+                     <TouchableOpacity
+                        style={[
+                           styles.modalButton,
+                           {
+                              borderColor: Colors[theme].accent,
+                              backgroundColor: Colors[theme].accent,
+                           },
+                        ]}
+                        onPress={() => handleViewFull(previewDoc)}
+                     >
+                        <ThemedText
+                           style={[styles.modalButtonText, { color: "#fff" }]}
+                        >
+                           View Full
+                        </ThemedText>
+                     </TouchableOpacity>
+                  </View>
+               </ThemedView>
+            </ThemedView>
+         )}
+
+         {/* Full text modal for non-PDF docs */}
+         {fullDoc && (
+            <ThemedView style={styles.modalOverlay}>
+               <TouchableOpacity
+                  style={styles.modalBackdrop}
+                  activeOpacity={1}
+                  onPress={() => setFullDoc(null)}
+               />
+               <ThemedView
+                  style={[
+                     styles.modalCardLarge,
+                     {
+                        backgroundColor: Colors[theme].surface,
+                        borderColor: Colors[theme].border,
+                     },
+                  ]}
+               >
+                  <ThemedText style={styles.modalTitle}>
+                     {fullDoc.title}
+                  </ThemedText>
+                  <ScrollView style={{ flex: 1, marginTop: 8 }}>
+                     <ThemedText style={styles.fullText}>
+                        {fullDoc.content}
+                     </ThemedText>
+                  </ScrollView>
+                  <View style={[styles.modalButtonRow, { marginTop: 12 }]}>
+                     <TouchableOpacity
+                        style={[
+                           styles.modalButton,
+                           { borderColor: Colors[theme].border, flex: 1 },
+                        ]}
+                        onPress={() => setFullDoc(null)}
+                     >
+                        <ThemedText
+                           style={[
+                              styles.modalButtonText,
+                              { color: Colors[theme].text },
+                           ]}
+                        >
+                           Close
+                        </ThemedText>
+                     </TouchableOpacity>
+                  </View>
+               </ThemedView>
+            </ThemedView>
+         )}
+
+         {/* Delete confirmation overlay */}
+         {deleteTarget && (
+            <ThemedView style={styles.modalOverlay}>
+               <TouchableOpacity
+                  style={styles.modalBackdrop}
+                  activeOpacity={1}
+                  onPress={() => setDeleteTarget(null)}
+               />
+               <ThemedView
+                  style={[
+                     styles.modalCard,
+                     {
+                        backgroundColor: Colors[theme].surface,
+                        borderColor: Colors[theme].border,
+                     },
+                  ]}
+               >
+                  <ThemedText style={styles.modalTitle}>
+                     Delete Document
+                  </ThemedText>
+                  <ThemedText
+                     style={[
+                        styles.modalBody,
+                        { color: Colors[theme].textSecondary },
+                     ]}
+                  >
+                     Delete “{deleteTarget.title}”? This cannot be undone.
+                  </ThemedText>
+
+                  <View style={styles.modalButtonRow}>
+                     <TouchableOpacity
+                        style={[
+                           styles.modalButton,
+                           { borderColor: Colors[theme].border },
+                        ]}
+                        onPress={() => setDeleteTarget(null)}
+                     >
+                        <ThemedText
+                           style={[
+                              styles.modalButtonText,
+                              { color: Colors[theme].text },
+                           ]}
+                        >
+                           Cancel
+                        </ThemedText>
+                     </TouchableOpacity>
+
+                     <TouchableOpacity
+                        style={[
+                           styles.modalButton,
+                           {
+                              borderColor: Colors[theme].accent,
+                              backgroundColor: Colors[theme].accent,
+                           },
+                        ]}
+                        onPress={performDelete}
+                     >
+                        <ThemedText
+                           style={[styles.modalButtonText, { color: "#fff" }]}
+                        >
+                           Delete
+                        </ThemedText>
+                     </TouchableOpacity>
+                  </View>
+               </ThemedView>
+            </ThemedView>
+         )}
       </ThemedView>
    );
 }
@@ -520,4 +796,73 @@ const styles = StyleSheet.create({
       paddingHorizontal: 32,
    },
    emptyStateText: { textAlign: "center", marginTop: 16, lineHeight: 20 },
+
+   // modal shared
+   modalOverlay: {
+      position: "absolute",
+      left: 0,
+      right: 0,
+      top: 0,
+      bottom: 0,
+      justifyContent: "center",
+      alignItems: "center",
+   },
+   modalBackdrop: {
+      position: "absolute",
+      left: 0,
+      right: 0,
+      top: 0,
+      bottom: 0,
+      backgroundColor: "rgba(0,0,0,0.45)",
+   },
+   modalCard: {
+      width: "86%",
+      borderRadius: 18,
+      paddingHorizontal: 18,
+      paddingVertical: 16,
+      borderWidth: 1,
+   },
+   modalCardLarge: {
+      width: "90%",
+      maxHeight: "75%",
+      borderRadius: 18,
+      paddingHorizontal: 18,
+      paddingVertical: 16,
+      borderWidth: 1,
+   },
+   modalTitle: {
+      fontSize: 18,
+      fontWeight: "700",
+      marginBottom: 4,
+   },
+   modalSubText: {
+      fontSize: 13,
+      marginBottom: 8,
+   },
+   modalBody: {
+      fontSize: 14,
+      lineHeight: 20,
+      marginTop: 4,
+      marginBottom: 12,
+   },
+   modalButtonRow: {
+      flexDirection: "row",
+      justifyContent: "flex-end",
+      gap: 10,
+      marginTop: 4,
+   },
+   modalButton: {
+      paddingHorizontal: 14,
+      paddingVertical: 9,
+      borderRadius: 10,
+      borderWidth: 1,
+   },
+   modalButtonText: {
+      fontSize: 14,
+      fontWeight: "600",
+   },
+   fullText: {
+      fontSize: 14,
+      lineHeight: 20,
+   },
 });
