@@ -24,8 +24,33 @@ import { Colors } from "@/constants/Colors";
 import { useTheme } from "@/hooks/useTheme";
 import { useReaderTextStyle } from "@/hooks/useReaderPreferences";
 
-import { rewriteEasyRead } from "../lib/api";
+import { rewriteEasyRead, createUserDocument } from "../lib/api";
 
+const AUTH_TOKEN_KEYS = ["easyread.token", "authToken", "token"];
+
+const getAuthToken = async () => {
+   for (const key of AUTH_TOKEN_KEYS) {
+      const raw = await AsyncStorage.getItem(key);
+      if (!raw) continue;
+
+      try {
+         const parsed = JSON.parse(raw);
+         if (typeof parsed === "string") return parsed;
+         if (parsed?.token && typeof parsed.token === "string")
+            return parsed.token;
+         if (parsed?.authToken && typeof parsed.authToken === "string")
+            return parsed.authToken;
+         if (parsed?.accessToken && typeof parsed.accessToken === "string")
+            return parsed.accessToken;
+         if (parsed?.jwt && typeof parsed.jwt === "string") return parsed.jwt;
+      } catch {
+         return raw;
+      }
+   }
+   return null;
+};
+
+// Translator screen
 export default function TranslatorScreen() {
    const { theme } = useTheme();
    const router = useRouter();
@@ -35,14 +60,14 @@ export default function TranslatorScreen() {
    const [result, setResult] = useState("");
    const [loading, setLoading] = useState(false);
 
-   // modal for replacing alerts
    const [modalVisible, setModalVisible] = useState(false);
    const [modalTitle, setModalTitle] = useState<string>("");
    const [modalMessage, setModalMessage] = useState<string>("");
 
+   const [hasSaved, setHasSaved] = useState(false);
+
    const inputRef = useRef<TextInput>(null);
 
-   // 🔹 Reader preferences (font size / line height / alignment) shared across app
    const { textStyle: outputTextStyle } = useReaderTextStyle();
 
    const styles = useMemo(
@@ -153,7 +178,6 @@ export default function TranslatorScreen() {
             },
             miniBtnText: { fontWeight: "700", color: Colors[theme].text },
 
-            // Modal styles
             modalOverlay: {
                flex: 1,
                justifyContent: "center",
@@ -241,12 +265,14 @@ export default function TranslatorScreen() {
    const onSwap = () => {
       setSource(result);
       setResult(source);
+      setHasSaved(false);
       inputRef.current?.focus?.();
    };
 
    const onClear = () => {
       setSource("");
       setResult("");
+      setHasSaved(false);
       inputRef.current?.focus?.();
    };
 
@@ -256,6 +282,7 @@ export default function TranslatorScreen() {
 
       setLoading(true);
       setResult("");
+      setHasSaved(false);
 
       try {
          const simplified = await rewriteEasyRead(text);
@@ -276,7 +303,12 @@ export default function TranslatorScreen() {
       }
 
       try {
-         // 🔹 Use reader preferences for PDF styling
+         const token = await getAuthToken();
+         if (!token) {
+            showModal("Not signed in", "Please sign in to save this document.");
+            return;
+         }
+
          const fontSize =
             typeof outputTextStyle.fontSize === "number"
                ? outputTextStyle.fontSize
@@ -293,26 +325,26 @@ export default function TranslatorScreen() {
                | "justify") || "left";
 
          const html = `
-      <html><head><meta charset="utf-8" />
-      <style>
-        body{
-          font-family:-apple-system,Roboto,Arial,sans-serif;
-          padding:24px;
-          font-size:${fontSize}px;
-          line-height:${lineHeightPx}px;
-          text-align:${textAlign};
-        }
-        h1{margin:0 0 16px;font-size:${fontSize + 4}px}
-        p{white-space:pre-wrap}
-      </style></head>
-      <body>
-        <h1>Easy Read</h1>
-        <p>${text
-           .replace(/&/g, "&amp;")
-           .replace(/</g, "&lt;")
-           .replace(/>/g, "&gt;")
-           .replace(/\n/g, "<br/>")}</p>
-      </body></html>`.trim();
+       <html><head><meta charset="utf-8" />
+       <style>
+         body{
+           font-family:-apple-system,Roboto,Arial,sans-serif;
+           padding:24px;
+           font-size:${fontSize}px;
+           line-height:${lineHeightPx}px;
+           text-align:${textAlign};
+         }
+         h1{margin:0 0 16px;font-size:${fontSize + 4}px}
+         p{white-space:pre-wrap}
+       </style></head>
+       <body>
+         <h1>Easy Read</h1>
+         <p>${text
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/\n/g, "<br/>")}</p>
+       </body></html>`.trim();
 
          const pdf = await printToFileAsync({ html });
 
@@ -325,32 +357,26 @@ export default function TranslatorScreen() {
             encoding: FS.EncodingType.Base64,
          });
 
-         const document = {
-            id: String(Date.now()),
+         await createUserDocument(token, {
             title: "Easy Read PDF",
             content: text,
-            type: "pdf" as const,
-            date: new Date().toISOString(),
+            type: "pdf",
+            sourceTag: "translator",
             fileName,
             url: dest,
-            sourceTag: "translator" as const,
-         };
-         const existing = await AsyncStorage.getItem("documents");
-         const docs = existing ? JSON.parse(existing) : [];
-         docs.unshift(document);
-         await AsyncStorage.setItem("documents", JSON.stringify(docs));
+         });
 
-         showModal("Saved", "PDF saved to your Documents.");
+         setHasSaved(true);
+         showModal("Saved", "PDF saved to your account.");
       } catch (e: any) {
          showModal("Save Failed", String(e?.message || e));
       }
-   }, [result, router, outputTextStyle]);
+   }, [result, outputTextStyle]);
 
    return (
       <ThemedView style={styles.screen}>
          <Stack.Screen options={{ headerShown: false }} />
 
-         {/* Red Header */}
          <ThemedView style={styles.topbar}>
             <Pressable onPress={() => router.back()} style={styles.backButton}>
                <Ionicons name="chevron-back" size={24} color="#fff" />
@@ -358,9 +384,7 @@ export default function TranslatorScreen() {
             <ThemedText style={styles.headerTitle}>Translator</ThemedText>
          </ThemedView>
 
-         {/* MAIN */}
          <View style={styles.panes}>
-            {/* INPUT */}
             <Card
                title="Input"
                actions={
@@ -444,7 +468,6 @@ export default function TranslatorScreen() {
                </View>
             </Card>
 
-            {/* OUTPUT */}
             <Card
                title="Easy Read"
                actions={
@@ -456,10 +479,11 @@ export default function TranslatorScreen() {
                         iconName="copy-outline"
                      />
                      <MiniButton
-                        label="Save as PDF"
+                        label={hasSaved ? "Saved" : "Save as PDF"}
                         onPress={saveAsPdf}
-                        disabled={!result}
+                        disabled={!result || hasSaved}
                         iconName="download-outline"
+                        variant="accent"
                      />
                   </>
                }
@@ -480,7 +504,6 @@ export default function TranslatorScreen() {
             </Card>
          </View>
 
-         {/* Themed Alert Modal */}
          <Modal
             visible={modalVisible}
             transparent
@@ -512,7 +535,7 @@ export default function TranslatorScreen() {
    );
 }
 
-/* Reusable bits */
+// Card component
 function Card({
    title,
    actions,
@@ -576,16 +599,19 @@ function Card({
    );
 }
 
+// Mini button component
 function MiniButton({
    label,
    onPress,
    disabled,
    iconName,
+   variant = "default",
 }: {
    label: string;
    onPress: () => void;
    disabled?: boolean;
    iconName?: React.ComponentProps<typeof Ionicons>["name"];
+   variant?: "default" | "accent";
 }) {
    const { theme } = useTheme();
    const styles = useMemo(
@@ -596,16 +622,27 @@ function MiniButton({
                paddingVertical: 8,
                borderRadius: 10,
                borderWidth: StyleSheet.hairlineWidth,
-               borderColor: Colors[theme].border,
-               backgroundColor: Colors[theme].surface,
+               borderColor:
+                  variant === "accent"
+                     ? Colors[theme].accent
+                     : Colors[theme].border,
+               backgroundColor:
+                  variant === "accent"
+                     ? Colors[theme].accent
+                     : Colors[theme].surface,
                flexDirection: "row",
                alignItems: "center",
                gap: 6,
             },
-            txt: { fontWeight: "700", color: Colors[theme].text },
+            txt: {
+               fontWeight: "700",
+               color: variant === "accent" ? "#fff" : Colors[theme].text,
+            },
          }),
-      [theme]
+      [theme, variant]
    );
+
+   const iconColor = variant === "accent" ? "#fff" : Colors[theme].text;
 
    return (
       <Pressable
@@ -617,7 +654,7 @@ function MiniButton({
          ]}
       >
          {iconName ? (
-            <Ionicons name={iconName} size={16} color={Colors[theme].text} />
+            <Ionicons name={iconName} size={16} color={iconColor} />
          ) : null}
          <ThemedText style={styles.txt}>{label}</ThemedText>
       </Pressable>

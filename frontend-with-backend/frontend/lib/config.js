@@ -1,1 +1,2 @@
-export const BASE_URL = "http://192.168.1.107:5000";
+export const ip_address = "192.168.1.107";
+export const BASE_URL = `http://${ip_address}:5000`;

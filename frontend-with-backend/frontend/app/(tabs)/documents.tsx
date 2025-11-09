@@ -4,6 +4,11 @@ import {
    TouchableOpacity,
    Alert,
    View,
+   RefreshControl,
+   NativeSyntheticEvent,
+   NativeScrollEvent,
+   Platform,
+   Linking,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter, useFocusEffect } from "expo-router";
@@ -17,6 +22,11 @@ import { ThemedText } from "@/components/ThemedText";
 import { ThemedView } from "@/components/ThemedView";
 import { Colors } from "@/constants/Colors";
 import { useTheme } from "@/hooks/useTheme";
+import { fetchUserDocuments, deleteUserDocument } from "../../lib/api";
+
+/* =========================================================
+   TYPES
+   ========================================================= */
 
 type SourceTag = "scan" | "url" | "upload" | "translator";
 
@@ -24,27 +34,55 @@ interface Document {
    id: string;
    title: string;
    content: string;
-   type: "scan" | "web" | "pdf";
+   type: string;
    date: string;
    url?: string;
+   fileUrl?: string;
    imageUri?: string;
    fileName?: string;
    sourceTag?: SourceTag;
 }
 
-type AddRoute = "/camera" | "/url-import" | "/pdf-upload" | "/translator";
+const AUTH_TOKEN_KEYS = ["easyread.token", "authToken", "token"];
+
+/* =========================================================
+   HELPERS
+   ========================================================= */
+
+const getAuthToken = async () => {
+   for (const key of AUTH_TOKEN_KEYS) {
+      const raw = await AsyncStorage.getItem(key);
+      if (!raw) continue;
+
+      try {
+         const parsed = JSON.parse(raw);
+         if (typeof parsed === "string") return parsed;
+         if (parsed?.token) return parsed.token;
+         if (parsed?.authToken) return parsed.authToken;
+         if (parsed?.accessToken) return parsed.accessToken;
+         if (parsed?.jwt) return parsed.jwt;
+      } catch {
+         return raw;
+      }
+   }
+   return null;
+};
+
+/* =========================================================
+   COMPONENT
+   ========================================================= */
 
 export default function DocumentsScreen() {
    const { theme } = useTheme();
    const insets = useSafeAreaInsets();
    const router = useRouter();
-   const [documents, setDocuments] = useState<Document[]>([]);
-   const [isAddSheetVisible, setIsAddSheetVisible] = useState(false);
 
-   // modals
+   const [documents, setDocuments] = useState<Document[]>([]);
    const [previewDoc, setPreviewDoc] = useState<Document | null>(null);
-   const [fullDoc, setFullDoc] = useState<Document | null>(null);
    const [deleteTarget, setDeleteTarget] = useState<Document | null>(null);
+
+   const [refreshing, setRefreshing] = useState(false);
+   const [pullProgress, setPullProgress] = useState(0);
 
    useFocusEffect(
       useCallback(() => {
@@ -54,12 +92,49 @@ export default function DocumentsScreen() {
 
    const loadDocuments = async () => {
       try {
-         const savedDocs = await AsyncStorage.getItem("documents");
-         if (savedDocs) setDocuments(JSON.parse(savedDocs));
-      } catch (error) {
+         const token = await getAuthToken();
+         if (!token) {
+            setDocuments([]);
+            return;
+         }
+         const data = await fetchUserDocuments(token);
+         const apiDocs = data?.documents || [];
+
+         const mapped: Document[] = apiDocs.map((d: any) => ({
+            id: d.id,
+            title: d.title,
+            content: d.content,
+            type: d.type,
+            date: d.createdAt,
+            fileName: d.fileName,
+            sourceTag: d.sourceTag,
+            fileUrl: d.fileUrl ?? null, // MUST EXIST FOR PDF OPEN
+         }));
+
+         setDocuments(mapped);
+      } catch (error: any) {
          console.error("Failed to load documents:", error);
+         Alert.alert(
+            "Error",
+            String(error?.message || "Failed to load documents")
+         );
       }
    };
+
+   const onRefresh = async () => {
+      setRefreshing(true);
+      await loadDocuments();
+      setRefreshing(false);
+   };
+
+   const onScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const y = e.nativeEvent.contentOffset.y;
+      const pullDist = Math.min(Math.max(-y, 0), 120);
+      setPullProgress(pullDist / 120);
+   };
+
+   const rotateDeg = `${Math.floor(pullProgress * 360)}deg`;
+   const iconOpacity = pullProgress;
 
    const formatDateTime = (isoString: string) => {
       const d = new Date(isoString);
@@ -74,12 +149,39 @@ export default function DocumentsScreen() {
       );
    };
 
-   const shareDocument = async (doc: Document) => {
-      try {
-         if (doc.type === "pdf" && doc.url) {
-            await Sharing.shareAsync(doc.url);
+   /* =========================================================
+     PDF OPEN LOGIC
+     ========================================================= */
+
+   const openDocument = (doc: Document) => {
+      const isPdf =
+         doc.type === "pdf" ||
+         (doc.fileName ?? "").toLowerCase().endsWith(".pdf");
+
+      if (isPdf && doc.fileUrl) {
+         if (Platform.OS === "ios") {
+            Linking.openURL(doc.fileUrl).catch(() => {
+               Alert.alert("Open Failed", "Could not open PDF.");
+            });
+            return;
+         } else {
+            router.push({
+               pathname: "/pdf-viewer",
+               params: { url: doc.fileUrl, title: doc.title },
+            });
             return;
          }
+      }
+
+      setPreviewDoc(doc);
+   };
+
+   /* =========================================================
+     SHARE & DELETE
+     ========================================================= */
+
+   const shareDocument = async (doc: Document) => {
+      try {
          const tempPath = `${FS.cacheDirectory}easy-read-${doc.id}.txt`;
          await FS.writeAsStringAsync(tempPath, doc.content ?? "");
          await Sharing.shareAsync(tempPath, { mimeType: "text/plain" });
@@ -88,25 +190,20 @@ export default function DocumentsScreen() {
       }
    };
 
-   // actual delete logic, called from modal confirm
    const performDelete = async () => {
       if (!deleteTarget) return;
       const doc = deleteTarget;
       try {
-         if (doc.type === "pdf" && doc.url) {
-            try {
-               const info = await FS.getInfoAsync(doc.url);
-               if (info.exists)
-                  await FS.deleteAsync(doc.url, {
-                     idempotent: true,
-                  });
-            } catch {}
+         const token = await getAuthToken();
+         if (!token) {
+            Alert.alert(
+               "Error",
+               "You need to be signed in to delete documents."
+            );
+            return;
          }
-         const raw = await AsyncStorage.getItem("documents");
-         const list: Document[] = raw ? JSON.parse(raw) : [];
-         const next = list.filter((d) => d.id !== doc.id);
-         await AsyncStorage.setItem("documents", JSON.stringify(next));
-         setDocuments(next);
+         await deleteUserDocument(token, doc.id);
+         setDocuments((prev) => prev.filter((d) => d.id !== doc.id));
       } catch (e: any) {
          Alert.alert("Delete Failed", String(e?.message || e));
       } finally {
@@ -114,37 +211,7 @@ export default function DocumentsScreen() {
       }
    };
 
-   const viewFullDocument = (doc: Document) => {
-      if (doc.type === "pdf" && doc.url) {
-         router.push({
-            pathname: "/pdf-viewer",
-            params: { url: doc.url, title: doc.title },
-         });
-         return;
-      }
-      // non-PDF: show in themed modal
-      setFullDoc(doc);
-   };
-
-   const handleDocumentPress = (doc: Document) => {
-      setPreviewDoc(doc);
-   };
-
-   const handleAddDocument = () => {
-      setIsAddSheetVisible(true);
-   };
-
-   const closeAddSheet = () => {
-      setIsAddSheetVisible(false);
-   };
-
-   const handleAddOption = (route: AddRoute) => {
-      setIsAddSheetVisible(false);
-      router.push(route);
-   };
-
    const typeLabelFor = (doc: Document) => {
-      // 🔹 Prefer sourceTag for user-facing label
       switch (doc.sourceTag) {
          case "scan":
             return "Scanned Document";
@@ -155,22 +222,20 @@ export default function DocumentsScreen() {
          case "translator":
             return "Translated Text";
       }
-      // fallback to legacy type
-      if (doc.type === "scan") return "Scanned Document";
-      if (doc.type === "pdf") return "PDF Document";
       return "Web Article";
    };
 
-   const iconNameFor = (
-      doc: Document
-   ): React.ComponentProps<typeof Ionicons>["name"] => {
-      // 🔹 Prefer sourceTag first
+   const iconNameFor = (doc: Document) => {
       if (doc.sourceTag === "scan") return "camera-outline";
       if (doc.sourceTag === "url") return "globe-outline";
       if (doc.sourceTag === "upload") return "document-text-outline";
       if (doc.sourceTag === "translator") return "language-outline";
       return "globe-outline";
    };
+
+   /* =========================================================
+     RENDER
+     ========================================================= */
 
    return (
       <ThemedView
@@ -194,18 +259,55 @@ export default function DocumentsScreen() {
             </ThemedText>
          </ThemedView>
 
+         {Platform.OS !== "ios" && (
+            <View style={styles.pullContainer}>
+               <View
+                  style={[
+                     styles.pullIconWrap,
+                     {
+                        opacity: iconOpacity,
+                        transform: [{ rotate: rotateDeg }],
+                        borderColor: Colors[theme].border,
+                        backgroundColor: Colors[theme].surface,
+                     },
+                  ]}
+               >
+                  <Ionicons
+                     name={refreshing ? "reload-outline" : "sync-outline"}
+                     size={18}
+                     color={Colors[theme].accent}
+                  />
+               </View>
+               {pullProgress > 0.3 && !refreshing && (
+                  <ThemedText style={styles.pullText}>
+                     Pull to sync documents…
+                  </ThemedText>
+               )}
+            </View>
+         )}
+
          <ScrollView
             style={styles.scrollView}
             contentContainerStyle={{ paddingBottom: insets.bottom + 100 }}
             showsVerticalScrollIndicator={false}
+            onScroll={onScroll}
+            scrollEventThrottle={16}
+            refreshControl={
+               <RefreshControl
+                  refreshing={refreshing}
+                  onRefresh={onRefresh}
+                  tintColor={Colors[theme].accent}
+                  colors={[Colors[theme].accent]}
+                  progressViewOffset={Platform.OS === "ios" ? 64 : 0}
+               />
+            }
          >
-            {/* Add New */}
             <TouchableOpacity
                style={[
                   styles.addButton,
                   { backgroundColor: Colors[theme].buttonBackground },
                ]}
-               onPress={handleAddDocument}
+               onPress={() => Alert.alert("TODO: Add document")}
                activeOpacity={0.9}
             >
                <Ionicons name="add" size={20} color="#fff" />
@@ -242,7 +344,7 @@ export default function DocumentsScreen() {
                               borderColor: Colors[theme].border,
                            },
                         ]}
-                        onPress={() => handleDocumentPress(doc)}
+                        onPress={() => openDocument(doc)}
                         activeOpacity={0.85}
                      >
                         <ThemedView
@@ -286,7 +388,6 @@ export default function DocumentsScreen() {
                            </ThemedText>
                         </ThemedView>
 
-                        {/* Actions stacked vertically */}
                         <View style={styles.actions}>
                            <TouchableOpacity
                               onPress={() => shareDocument(doc)}
@@ -316,301 +417,18 @@ export default function DocumentsScreen() {
                </ThemedView>
             )}
          </ScrollView>
-
-         {/* Add Document bottom sheet */}
-         {isAddSheetVisible && (
-            <ThemedView style={styles.sheetOverlay}>
-               <TouchableOpacity
-                  style={styles.sheetBackdrop}
-                  activeOpacity={1}
-                  onPress={closeAddSheet}
-               />
-               <ThemedView
-                  style={[
-                     styles.sheet,
-                     {
-                        backgroundColor: Colors[theme].surface,
-                        borderColor: Colors[theme].border,
-                        marginBottom: insets.bottom + 16,
-                     },
-                  ]}
-               >
-                  <ThemedText style={styles.sheetTitle}>
-                     Add Document
-                  </ThemedText>
-
-                  <TouchableOpacity
-                     style={styles.sheetItem}
-                     onPress={() => handleAddOption("/camera")}
-                  >
-                     <Ionicons
-                        name="camera"
-                        size={20}
-                        color={Colors[theme].accent}
-                     />
-                     <ThemedText style={styles.sheetItemText}>
-                        Scan Document
-                     </ThemedText>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                     style={styles.sheetItem}
-                     onPress={() => handleAddOption("/url-import")}
-                  >
-                     <Ionicons
-                        name="link-outline"
-                        size={20}
-                        color={Colors[theme].accent}
-                     />
-                     <ThemedText style={styles.sheetItemText}>
-                        Paste URL
-                     </ThemedText>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                     style={styles.sheetItem}
-                     onPress={() => handleAddOption("/pdf-upload")}
-                  >
-                     <Ionicons
-                        name="document-text-outline"
-                        size={20}
-                        color={Colors[theme].accent}
-                     />
-                     <ThemedText style={styles.sheetItemText}>
-                        Upload PDF
-                     </ThemedText>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                     style={styles.sheetItem}
-                     onPress={() => handleAddOption("/translator")}
-                  >
-                     <Ionicons
-                        name="language-outline"
-                        size={20}
-                        color={Colors[theme].accent}
-                     />
-                     <ThemedText style={styles.sheetItemText}>
-                        Translate Text
-                     </ThemedText>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                     style={[styles.sheetItem, styles.sheetCancel]}
-                     onPress={closeAddSheet}
-                  >
-                     <ThemedText style={styles.sheetCancelText}>
-                        Cancel
-                     </ThemedText>
-                  </TouchableOpacity>
-               </ThemedView>
-            </ThemedView>
-         )}
-
-         {/* Preview modal */}
-         {previewDoc && (
-            <ThemedView style={styles.modalOverlay}>
-               <TouchableOpacity
-                  style={styles.modalBackdrop}
-                  activeOpacity={1}
-                  onPress={() => setPreviewDoc(null)}
-               />
-               <ThemedView
-                  style={[
-                     styles.modalCard,
-                     {
-                        backgroundColor: Colors[theme].surface,
-                        borderColor: Colors[theme].border,
-                     },
-                  ]}
-               >
-                  <ThemedText style={styles.modalTitle}>
-                     {previewDoc.title}
-                  </ThemedText>
-                  <ThemedText
-                     style={[
-                        styles.modalSubText,
-                        { color: Colors[theme].textSecondary },
-                     ]}
-                  >
-                     {typeLabelFor(previewDoc)} ·{" "}
-                     {formatDateTime(previewDoc.date)}
-                  </ThemedText>
-                  <ThemedText
-                     style={[
-                        styles.modalBody,
-                        { color: Colors[theme].textSecondary },
-                     ]}
-                  >
-                     {previewDoc.content.substring(0, 200)}...
-                  </ThemedText>
-
-                  <View style={styles.modalButtonRow}>
-                     <TouchableOpacity
-                        style={[
-                           styles.modalButton,
-                           { borderColor: Colors[theme].border },
-                        ]}
-                        onPress={() => setPreviewDoc(null)}
-                     >
-                        <ThemedText
-                           style={[
-                              styles.modalButtonText,
-                              { color: Colors[theme].text },
-                           ]}
-                        >
-                           Cancel
-                        </ThemedText>
-                     </TouchableOpacity>
-
-                     <TouchableOpacity
-                        style={[
-                           styles.modalButton,
-                           {
-                              borderColor: Colors[theme].accent,
-                              backgroundColor: Colors[theme].accent,
-                           },
-                        ]}
-                        onPress={() => {
-                           const doc = previewDoc;
-                           setPreviewDoc(null);
-                           viewFullDocument(doc);
-                        }}
-                     >
-                        <ThemedText
-                           style={[styles.modalButtonText, { color: "#fff" }]}
-                        >
-                           View Full
-                        </ThemedText>
-                     </TouchableOpacity>
-                  </View>
-               </ThemedView>
-            </ThemedView>
-         )}
-
-         {/* Full text modal for non-PDF docs */}
-         {fullDoc && fullDoc.type !== "pdf" && (
-            <ThemedView style={styles.modalOverlay}>
-               <TouchableOpacity
-                  style={styles.modalBackdrop}
-                  activeOpacity={1}
-                  onPress={() => setFullDoc(null)}
-               />
-               <ThemedView
-                  style={[
-                     styles.modalCardLarge,
-                     {
-                        backgroundColor: Colors[theme].surface,
-                        borderColor: Colors[theme].border,
-                     },
-                  ]}
-               >
-                  <ThemedText style={styles.modalTitle}>
-                     {fullDoc.title}
-                  </ThemedText>
-                  <ScrollView style={{ flex: 1, marginTop: 8 }}>
-                     <ThemedText style={styles.fullText}>
-                        {fullDoc.content}
-                     </ThemedText>
-                  </ScrollView>
-                  <View style={[styles.modalButtonRow, { marginTop: 12 }]}>
-                     <TouchableOpacity
-                        style={[
-                           styles.modalButton,
-                           { borderColor: Colors[theme].border, flex: 1 },
-                        ]}
-                        onPress={() => setFullDoc(null)}
-                     >
-                        <ThemedText
-                           style={[
-                              styles.modalButtonText,
-                              { color: Colors[theme].text },
-                           ]}
-                        >
-                           Close
-                        </ThemedText>
-                     </TouchableOpacity>
-                  </View>
-               </ThemedView>
-            </ThemedView>
-         )}
-
-         {/* Delete confirmation modal */}
-         {deleteTarget && (
-            <ThemedView style={styles.modalOverlay}>
-               <TouchableOpacity
-                  style={styles.modalBackdrop}
-                  activeOpacity={1}
-                  onPress={() => setDeleteTarget(null)}
-               />
-               <ThemedView
-                  style={[
-                     styles.modalCard,
-                     {
-                        backgroundColor: Colors[theme].surface,
-                        borderColor: Colors[theme].border,
-                     },
-                  ]}
-               >
-                  <ThemedText style={styles.modalTitle}>
-                     Delete Document
-                  </ThemedText>
-                  <ThemedText
-                     style={[
-                        styles.modalBody,
-                        { color: Colors[theme].textSecondary },
-                     ]}
-                  >
-                     Delete “{deleteTarget.title}”? This cannot be undone.
-                  </ThemedText>
-
-                  <View style={styles.modalButtonRow}>
-                     <TouchableOpacity
-                        style={[
-                           styles.modalButton,
-                           { borderColor: Colors[theme].border },
-                        ]}
-                        onPress={() => setDeleteTarget(null)}
-                     >
-                        <ThemedText
-                           style={[
-                              styles.modalButtonText,
-                              { color: Colors[theme].text },
-                           ]}
-                        >
-                           Cancel
-                        </ThemedText>
-                     </TouchableOpacity>
-
-                     <TouchableOpacity
-                        style={[
-                           styles.modalButton,
-                           {
-                              borderColor: Colors[theme].accent,
-                              backgroundColor: Colors[theme].accent,
-                           },
-                        ]}
-                        onPress={performDelete}
-                     >
-                        <ThemedText
-                           style={[styles.modalButtonText, { color: "#fff" }]}
-                        >
-                           Delete
-                        </ThemedText>
-                     </TouchableOpacity>
-                  </View>
-               </ThemedView>
-            </ThemedView>
-         )}
       </ThemedView>
    );
 }
+
+/* =========================================================
+   STYLES
+   ========================================================= */
 
 const styles = StyleSheet.create({
    container: { flex: 1 },
 
    header: { paddingBottom: 24, paddingHorizontal: 20 },
-
    headerTitle: {
       fontSize: 28,
       fontWeight: "bold",
@@ -618,6 +436,31 @@ const styles = StyleSheet.create({
       marginBottom: 4,
    },
    headerSubtitle: { fontSize: 16, color: "#fff", opacity: 0.8 },
+
+   pullContainer: {
+      position: "absolute",
+      top: 0,
+      left: 0,
+      right: 0,
+      alignItems: "center",
+      zIndex: 10,
+      pointerEvents: "none",
+   },
+
+   pullIconWrap: {
+      width: 32,
+      height: 32,
+      borderWidth: 1,
+      borderRadius: 16,
+      justifyContent: "center",
+      alignItems: "center",
+   },
+
+   pullText: {
+      fontSize: 12,
+      opacity: 0.8,
+      marginTop: 6,
+   },
 
    scrollView: { flex: 1, paddingHorizontal: 20 },
 
@@ -647,6 +490,7 @@ const styles = StyleSheet.create({
       borderWidth: 1,
       gap: 8,
    },
+
    documentIcon: {
       width: 48,
       height: 48,
@@ -655,6 +499,7 @@ const styles = StyleSheet.create({
       alignItems: "center",
       marginRight: 8,
    },
+
    documentInfo: { flex: 1 },
    documentTitle: { fontSize: 16, fontWeight: "600", marginBottom: 4 },
    documentDate: { fontSize: 14, marginBottom: 4 },
@@ -675,126 +520,4 @@ const styles = StyleSheet.create({
       paddingHorizontal: 32,
    },
    emptyStateText: { textAlign: "center", marginTop: 16, lineHeight: 20 },
-
-   // bottom sheet (Add Document)
-   sheetOverlay: {
-      position: "absolute",
-      left: 0,
-      right: 0,
-      top: 0,
-      bottom: 0,
-      justifyContent: "flex-end",
-      alignItems: "center",
-   },
-   sheetBackdrop: {
-      position: "absolute",
-      left: 0,
-      right: 0,
-      top: 0,
-      bottom: 0,
-      backgroundColor: "rgba(0,0,0,0.4)",
-   },
-   sheet: {
-      width: "94%",
-      borderRadius: 16,
-      borderWidth: 1,
-      paddingHorizontal: 16,
-      paddingTop: 12,
-      paddingBottom: 8,
-   },
-   sheetTitle: {
-      fontSize: 16,
-      fontWeight: "700",
-      marginBottom: 4,
-   },
-   sheetItem: {
-      flexDirection: "row",
-      alignItems: "center",
-      paddingVertical: 10,
-      gap: 10,
-   },
-   sheetItemText: {
-      fontSize: 15,
-      fontWeight: "500",
-   },
-   sheetCancel: {
-      marginTop: 4,
-      justifyContent: "center",
-   },
-   sheetCancelText: {
-      fontSize: 15,
-      fontWeight: "600",
-      color: "#FF3B30",
-      textAlign: "center",
-      width: "100%",
-   },
-
-   // generic modals (preview, full text, delete)
-   modalOverlay: {
-      position: "absolute",
-      left: 0,
-      right: 0,
-      top: 0,
-      bottom: 0,
-      justifyContent: "center",
-      alignItems: "center",
-   },
-   modalBackdrop: {
-      position: "absolute",
-      left: 0,
-      right: 0,
-      top: 0,
-      bottom: 0,
-      backgroundColor: "rgba(0,0,0,0.45)",
-   },
-   modalCard: {
-      width: "86%",
-      borderRadius: 18,
-      paddingHorizontal: 18,
-      paddingVertical: 16,
-      borderWidth: 1,
-   },
-   modalCardLarge: {
-      width: "90%",
-      maxHeight: "75%",
-      borderRadius: 18,
-      paddingHorizontal: 18,
-      paddingVertical: 16,
-      borderWidth: 1,
-   },
-   modalTitle: {
-      fontSize: 18,
-      fontWeight: "700",
-      marginBottom: 4,
-   },
-   modalSubText: {
-      fontSize: 13,
-      marginBottom: 8,
-   },
-   modalBody: {
-      fontSize: 14,
-      lineHeight: 20,
-      marginTop: 4,
-      marginBottom: 12,
-   },
-   modalButtonRow: {
-      flexDirection: "row",
-      justifyContent: "flex-end",
-      gap: 10,
-      marginTop: 4,
-   },
-   modalButton: {
-      paddingHorizontal: 14,
-      paddingVertical: 9,
-      borderRadius: 10,
-      borderWidth: 1,
-   },
-   modalButtonText: {
-      fontSize: 14,
-      fontWeight: "600",
-   },
-   fullText: {
-      fontSize: 14,
-      lineHeight: 20,
-   },
 });

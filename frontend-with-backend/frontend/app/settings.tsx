@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
    ScrollView,
    StyleSheet,
@@ -16,10 +16,35 @@ import { ThemedView } from "@/components/ThemedView";
 import { Colors } from "@/constants/Colors";
 import { useTheme } from "@/hooks/useTheme";
 
+// SETTINGS API (USER-LINKED)
+import { fetchUserSettings, updateUserSettings } from "../lib/api";
+
 const STORAGE_KEY = "easyread.settings.v1";
+const AUTH_TOKEN_KEYS = ["easyread.token", "authToken", "token"];
 
 type LineHeightOption = "Compact" | "Normal" | "Spacious";
 type AlignmentOption = "Left" | "Center" | "Justify";
+
+const getAuthToken = async (): Promise<string | null> => {
+   for (const key of AUTH_TOKEN_KEYS) {
+      const raw = await AsyncStorage.getItem(key);
+      if (!raw) continue;
+      try {
+         const parsed = JSON.parse(raw as any);
+         if (typeof parsed === "string") return parsed;
+         if (parsed?.token && typeof parsed.token === "string")
+            return parsed.token;
+         if (parsed?.authToken && typeof parsed.authToken === "string")
+            return parsed.authToken;
+         if (parsed?.accessToken && typeof parsed.accessToken === "string")
+            return parsed.accessToken;
+         if (parsed?.jwt && typeof parsed.jwt === "string") return parsed.jwt;
+      } catch {
+         return raw;
+      }
+   }
+   return null;
+};
 
 export default function SettingsScreen() {
    const { theme, themeMode, setThemeMode } = useTheme();
@@ -33,6 +58,11 @@ export default function SettingsScreen() {
    const [autoDownload, setAutoDownload] = useState(false);
    const [wifiOnly, setWifiOnly] = useState(true);
    const [biometricAuth, setBiometricAuth] = useState(false);
+
+   // auth & sync
+   const [authToken, setAuthToken] = useState<string | null>(null);
+   const didHydrateRef = useRef(false);
+   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
    const lineHeightOptions = ["Compact", "Normal", "Spacious"] as const;
    const alignmentOptions = ["Left", "Center", "Justify"] as const;
@@ -135,7 +165,6 @@ export default function SettingsScreen() {
                marginTop: 12,
             },
             previewText: { color: Colors[theme].text },
-            // icon + label inside theme option
             themeOptionContent: {
                flexDirection: "row",
                alignItems: "center",
@@ -145,28 +174,69 @@ export default function SettingsScreen() {
       [theme, insets]
    );
 
-   // Load saved settings
+   /* =========================================================
+      HYDRATE FROM LOCAL STORAGE, THEN SERVER (IF AUTHED)
+      ========================================================= */
    useEffect(() => {
       (async () => {
          try {
+            // Load local first (backwards compatible)
             const raw = await AsyncStorage.getItem(STORAGE_KEY);
-            if (!raw) return;
-            const s = JSON.parse(raw);
-            if (typeof s.fontSize === "number") setFontSize(s.fontSize);
-            if (s.lineHeight) setLineHeight(s.lineHeight);
-            if (s.textAlignment) setTextAlignment(s.textAlignment);
-            if (typeof s.notifications === "boolean")
-               setNotifications(s.notifications);
-            if (typeof s.autoDownload === "boolean")
-               setAutoDownload(s.autoDownload);
-            if (typeof s.wifiOnly === "boolean") setWifiOnly(s.wifiOnly);
-            if (typeof s.biometricAuth === "boolean")
-               setBiometricAuth(s.biometricAuth);
-         } catch {}
+            if (raw) {
+               const s = JSON.parse(raw);
+               if (typeof s.fontSize === "number") setFontSize(s.fontSize);
+               if (s.lineHeight) setLineHeight(s.lineHeight);
+               if (s.textAlignment) setTextAlignment(s.textAlignment);
+               if (typeof s.notifications === "boolean")
+                  setNotifications(s.notifications);
+               if (typeof s.autoDownload === "boolean")
+                  setAutoDownload(s.autoDownload);
+               if (typeof s.wifiOnly === "boolean") setWifiOnly(s.wifiOnly);
+               if (typeof s.biometricAuth === "boolean")
+                  setBiometricAuth(s.biometricAuth);
+               if (s.themeMode && typeof s.themeMode === "string") {
+                  // do not force if user changed theme earlier in the session
+                  if (s.themeMode !== themeMode) setThemeMode(s.themeMode);
+               }
+            }
+
+            // Then, if signed in, fetch server settings and merge
+            const token = await getAuthToken();
+            setAuthToken(token);
+            if (token) {
+               const remote = await fetchUserSettings(token).catch(() => null);
+               if (remote && remote.settings) {
+                  const r = remote.settings;
+                  if (typeof r.fontSize === "number") setFontSize(r.fontSize);
+                  if (r.lineHeight) setLineHeight(r.lineHeight);
+                  if (r.textAlignment) setTextAlignment(r.textAlignment);
+                  if (typeof r.notifications === "boolean")
+                     setNotifications(r.notifications);
+                  if (typeof r.autoDownload === "boolean")
+                     setAutoDownload(r.autoDownload);
+                  if (typeof r.wifiOnly === "boolean") setWifiOnly(r.wifiOnly);
+                  if (typeof r.biometricAuth === "boolean")
+                     setBiometricAuth(r.biometricAuth);
+                  if (
+                     r.themeMode &&
+                     typeof r.themeMode === "string" &&
+                     r.themeMode !== themeMode
+                  ) {
+                     setThemeMode(r.themeMode);
+                  }
+               }
+            }
+         } finally {
+            // prevent first persistence from triggering remote write immediately
+            didHydrateRef.current = true;
+         }
       })();
+      // eslint-disable-next-line react-hooks/exhaustive-deps
    }, []);
 
-   // Persist settings
+   /* =========================================================
+      PERSIST LOCALLY + SYNC TO SERVER (DEBOUNCED)
+      ========================================================= */
    useEffect(() => {
       const s = {
          fontSize,
@@ -176,8 +246,18 @@ export default function SettingsScreen() {
          autoDownload,
          wifiOnly,
          biometricAuth,
+         themeMode,
       };
       AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(s)).catch(() => {});
+
+      if (!didHydrateRef.current) return;
+
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = setTimeout(() => {
+         if (authToken) {
+            updateUserSettings(authToken, s).catch(() => {});
+         }
+      }, 500); // small debounce to avoid spamming server
    }, [
       fontSize,
       lineHeight,
@@ -186,6 +266,8 @@ export default function SettingsScreen() {
       autoDownload,
       wifiOnly,
       biometricAuth,
+      themeMode,
+      authToken,
    ]);
 
    const previewStyles = useMemo(() => {

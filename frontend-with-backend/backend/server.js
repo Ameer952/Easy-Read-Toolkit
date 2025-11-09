@@ -20,25 +20,23 @@ app.use(express.json({ limit: "2mb" }));
 app.use(cors({ origin: (process.env.ALLOWED_ORIGIN || "*").split(",") }));
 app.use(rateLimit({ windowMs: 60_000, max: 60 }));
 
-// Uploads kept in memory
 const upload = multer({ storage: multer.memoryStorage() });
 const clamp = (s, max = 20000) => (s && s.length > max ? s.slice(0, max) : s);
 
-// Health check
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
 /* =========================================================
-   SQLite-backed AUTH (ported from profilebackend.ts)
+   SQLite-backed AUTH AND DB SETUP
    ========================================================= */
 
-// --- CONFIG / DB (from teammate) ---
-const PORT = Number(process.env.PORT) || 5000; // :contentReference[oaicite:0]{index=0}
+const PORT = Number(process.env.PORT) || 5000;
 const JWT_SECRET =
-   process.env.JWT_SECRET_KEY || crypto.randomBytes(32).toString("hex"); // :contentReference[oaicite:1]{index=1}
-const TOKEN_EXPIRY = "7d"; // :contentReference[oaicite:2]{index=2}
-const DB_PATH = path.join(__dirname, "users.db"); // :contentReference[oaicite:3]{index=3}
+   process.env.JWT_SECRET_KEY || crypto.randomBytes(32).toString("hex");
+const TOKEN_EXPIRY = "7d";
+const DB_PATH = path.join(__dirname, "users.db");
 
 const db = new Database(DB_PATH);
+
 db.prepare(
    `
   CREATE TABLE IF NOT EXISTS users (
@@ -51,47 +49,170 @@ db.prepare(
   )
 `
 ).run();
-console.log("✅ SQLite database ready: users table created if missing.");
 
-// --- TYPES (informal here, just documenting teammate’s shape) ---
-/*
-interface User {
-  id: string;
-  name: string;
-  email: string;
-  password: string;
-  createdAt: string;
-  updatedAt: string;
-}
-*/
+db.prepare(
+   `
+  CREATE TABLE IF NOT EXISTS documents (
+    id TEXT PRIMARY KEY,
+    userId TEXT NOT NULL,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    type TEXT NOT NULL,
+    sourceTag TEXT,
+    fileName TEXT,
+    fileUrl TEXT,
+    createdAt TEXT NOT NULL
+  )
+`
+).run();
+db.prepare(
+   `CREATE INDEX IF NOT EXISTS idx_documents_userId ON documents(userId)`
+).run();
+db.prepare(
+   `CREATE INDEX IF NOT EXISTS idx_documents_createdAt ON documents(createdAt)`
+).run();
 
-// --- HELPERS (ported) ---
-const hashPassword = async (password) => await bcrypt.hash(password, 10); // :contentReference[oaicite:4]{index=4}
+/* =========================================================
+   SETTINGS TABLE (USER-LINKED)
+   ========================================================= */
+
+db.prepare(
+   `
+  CREATE TABLE IF NOT EXISTS settings (
+    userId TEXT PRIMARY KEY,
+    json TEXT NOT NULL,
+    updatedAt TEXT NOT NULL
+  )
+`
+).run();
+
+/* =========================================================
+   HELPERS: USERS
+   ========================================================= */
+
+const hashPassword = async (password) => await bcrypt.hash(password, 10);
 const verifyPassword = async (password, hash) =>
-   await bcrypt.compare(password, hash); // :contentReference[oaicite:5]{index=5}
+   await bcrypt.compare(password, hash);
 const createToken = (userId, email) =>
-   jwt.sign({ userId, email }, JWT_SECRET, { expiresIn: TOKEN_EXPIRY }); // :contentReference[oaicite:6]{index=6}
-const verifyToken = (token) => jwt.verify(token, JWT_SECRET); // :contentReference[oaicite:7]{index=7}
+   jwt.sign({ userId, email }, JWT_SECRET, { expiresIn: TOKEN_EXPIRY });
+const verifyToken = (token) => jwt.verify(token, JWT_SECRET);
 const removePassword = (user) => {
-   const { password, ...userWithoutPassword } = user; // :contentReference[oaicite:8]{index=8}
+   const { password, ...userWithoutPassword } = user;
    return userWithoutPassword;
 };
 const getUserById = (id) =>
-   db.prepare("SELECT * FROM users WHERE id = ?").get(id); // :contentReference[oaicite:9]{index=9}
+   db.prepare("SELECT * FROM users WHERE id = ?").get(id);
 const getUserByEmail = (email) =>
-   db.prepare("SELECT * FROM users WHERE email = ?").get(email); // :contentReference[oaicite:10]{index=10}
+   db.prepare("SELECT * FROM users WHERE email = ?").get(email);
 const updateUser = (user) =>
    db
       .prepare(
          "UPDATE users SET name = ?, email = ?, updatedAt = ? WHERE id = ?"
       )
-      .run(user.name, user.email, user.updatedAt, user.id); // :contentReference[oaicite:11]{index=11}
-const deleteUser = (id) => db.prepare("DELETE FROM users WHERE id = ?").run(id); // :contentReference[oaicite:12]{index=12}
-const generateUserId = () => `user_${Date.now()}`; // :contentReference[oaicite:13]{index=13}
+      .run(user.name, user.email, user.updatedAt, user.id);
+const deleteUser = (id) => db.prepare("DELETE FROM users WHERE id = ?").run(id);
+const generateUserId = () => `user_${Date.now()}`;
 
-// --- AUTH MIDDLEWARE (ported) ---
+/* =========================================================
+   HELPERS: DOCUMENTS
+   ========================================================= */
+
+const createDocumentId = () => `doc_${crypto.randomBytes(8).toString("hex")}`;
+
+const createDocument = (
+   userId,
+   { title, content, type, sourceTag, fileName, fileUrl }
+) => {
+   const id = createDocumentId();
+   const createdAt = new Date().toISOString();
+
+   db.prepare(
+      `
+    INSERT INTO documents (id, userId, title, content, type, sourceTag, fileName, fileUrl, createdAt)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `
+   ).run(
+      id,
+      userId,
+      title,
+      content,
+      type,
+      sourceTag || null,
+      fileName || null,
+      fileUrl || null,
+      createdAt
+   );
+
+   return {
+      id,
+      userId,
+      title,
+      content,
+      type,
+      sourceTag: sourceTag || null,
+      fileName: fileName || null,
+      fileUrl: fileUrl || null,
+      createdAt,
+   };
+};
+
+const getDocumentsForUser = (userId) =>
+   db
+      .prepare(
+         `
+    SELECT id, title, content, type, sourceTag, fileName, fileUrl, createdAt
+    FROM documents
+    WHERE userId = ?
+    ORDER BY datetime(createdAt) DESC
+  `
+      )
+      .all(userId);
+
+const getDocumentById = (id) =>
+   db.prepare("SELECT * FROM documents WHERE id = ?").get(id);
+
+const deleteDocumentForUser = (userId, docId) => {
+   const doc = getDocumentById(docId);
+   if (!doc || doc.userId !== userId) return false;
+   db.prepare("DELETE FROM documents WHERE id = ?").run(docId);
+   return true;
+};
+
+/* =========================================================
+   SETTINGS HELPERS
+   ========================================================= */
+
+const getSettingsForUser = (userId) => {
+   const row = db
+      .prepare("SELECT json FROM settings WHERE userId = ?")
+      .get(userId);
+   if (!row) return null;
+   try {
+      return JSON.parse(row.json);
+   } catch {
+      return null;
+   }
+};
+
+const upsertSettingsForUser = (userId, jsonObj) => {
+   const now = new Date().toISOString();
+   const asJson = JSON.stringify(jsonObj || {});
+   db.prepare(
+      `
+    INSERT INTO settings (userId, json, updatedAt)
+    VALUES (?, ?, ?)
+    ON CONFLICT(userId)
+    DO UPDATE SET json=excluded.json, updatedAt=excluded.updatedAt
+  `
+   ).run(userId, asJson, now);
+   return { success: true, updatedAt: now, settings: jsonObj };
+};
+
+/* =========================================================
+   AUTH MIDDLEWARE
+   ========================================================= */
+
 const authenticate = (req, res, next) => {
-   // :contentReference[oaicite:14]{index=14}
    try {
       const token = req.headers.authorization?.split(" ")[1];
       if (!token)
@@ -111,17 +232,18 @@ const authenticate = (req, res, next) => {
    }
 };
 
-// --- ROUTES (ported) ---
+/* =========================================================
+   AUTH ROUTES
+   ========================================================= */
+
 app.get("/", (_req, res) =>
    res.json({
       success: true,
       message: "Easy Read Toolkit Profile API is running",
    })
-); // :contentReference[oaicite:15]{index=15}
+);
 
-// POST /api/auth/register
 app.post("/api/auth/register", async (req, res) => {
-   // :contentReference[oaicite:16]{index=16}
    const { name, email, password } = req.body;
    if (!name || !email || !password)
       return res
@@ -140,7 +262,7 @@ app.post("/api/auth/register", async (req, res) => {
       password: await hashPassword(password),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-   }; // :contentReference[oaicite:17]{index=17}
+   };
 
    db.prepare(
       "INSERT INTO users (id, name, email, password, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)"
@@ -151,20 +273,18 @@ app.post("/api/auth/register", async (req, res) => {
       user.password,
       user.createdAt,
       user.updatedAt
-   ); // :contentReference[oaicite:18]{index=18}
+   );
 
-   const token = createToken(user.id, user.email); // :contentReference[oaicite:19]{index=19}
+   const token = createToken(user.id, user.email);
    res.status(201).json({
       success: true,
       message: "User registered successfully",
       user: removePassword(user),
       token,
-   }); // :contentReference[oaicite:20]{index=20}
+   });
 });
 
-// POST /api/auth/login
 app.post("/api/auth/login", async (req, res) => {
-   // :contentReference[oaicite:21]{index=21}
    const { email, password } = req.body;
    const user = getUserByEmail(email);
    if (!user || !(await verifyPassword(password, user.password)))
@@ -172,28 +292,24 @@ app.post("/api/auth/login", async (req, res) => {
          .status(401)
          .json({ success: false, message: "Invalid credentials" });
 
-   const token = createToken(user.id, user.email); // :contentReference[oaicite:22]{index=22}
+   const token = createToken(user.id, user.email);
    res.json({
       success: true,
       message: "Login successful",
       user: removePassword(user),
       token,
-   }); // :contentReference[oaicite:23]{index=23}
+   });
 });
 
-// POST /api/auth/logout
 app.post("/api/auth/logout", authenticate, (_req, res) =>
    res.json({ success: true, message: "Logout successful" })
-); // :contentReference[oaicite:24]{index=24}
+);
 
-// GET /api/auth/me
 app.get("/api/auth/me", authenticate, (req, res) =>
    res.json(removePassword(req.user))
-); // :contentReference[oaicite:25]{index=25}
+);
 
-// PUT /api/auth/profile
 app.put("/api/auth/profile", authenticate, (req, res) => {
-   // :contentReference[oaicite:26]{index=26}
    const { name, email } = req.body;
    const user = req.user;
 
@@ -210,16 +326,12 @@ app.put("/api/auth/profile", authenticate, (req, res) => {
    res.json(removePassword(user));
 });
 
-// DELETE /api/auth/profile
 app.delete("/api/auth/profile", authenticate, (req, res) => {
-   // :contentReference[oaicite:27]{index=27}
    deleteUser(req.user.id);
    res.json({ success: true, message: "Account deleted successfully" });
 });
 
-// GET /api/users/stats
 app.get("/api/users/stats", authenticate, (_req, res) => {
-   // :contentReference[oaicite:28]{index=28}
    res.json({
       success: true,
       stats: {
@@ -231,17 +343,71 @@ app.get("/api/users/stats", authenticate, (_req, res) => {
    });
 });
 
-// GET /api/my-documents
+/* =========================================================
+   SETTINGS API (USER-LINKED)
+   ========================================================= */
+
+app.get("/api/settings", authenticate, (req, res) => {
+   const s = getSettingsForUser(req.user.id);
+   res.json({ success: true, settings: s || {} });
+});
+
+app.put("/api/settings", authenticate, (req, res) => {
+   try {
+      const incoming = typeof req.body === "object" && req.body ? req.body : {};
+      const out = upsertSettingsForUser(req.user.id, incoming);
+      res.json({ success: true, ...out });
+   } catch (e) {
+      res.status(400).json({
+         success: false,
+         message: "Invalid settings body",
+      });
+   }
+});
+
+/* =========================================================
+   DOCUMENTS API (USER-LINKED)
+   ========================================================= */
+
 app.get("/api/my-documents", authenticate, (req, res) => {
-   const docs = db
-      .prepare("SELECT id, filename, uploadedAt, contentType FROM documents WHERE userId = ? ORDER BY uploadedAt DESC")
-      .all(req.user.id);
+   const docs = getDocumentsForUser(req.user.id);
    res.json({ success: true, count: docs.length, documents: docs });
 });
 
-// GET /api/admin/export
+const documentSchema = z.object({
+   title: z.string().min(1).max(500),
+   content: z.string().min(1),
+   type: z.string().min(1),
+   sourceTag: z.string().optional(),
+   fileName: z.string().optional(),
+   fileUrl: z.string().optional(), // <-- allow client to store local device path for PDFs
+});
+
+app.post("/api/documents", authenticate, (req, res) => {
+   try {
+      const payload = documentSchema.parse(req.body);
+      const doc = createDocument(req.user.id, payload);
+      res.status(201).json({ success: true, document: doc });
+   } catch (e) {
+      res.status(400).json({
+         success: false,
+         message: e.message || "Invalid payload",
+      });
+   }
+});
+
+app.delete("/api/documents/:id", authenticate, (req, res) => {
+   const id = req.params.id;
+   const ok = deleteDocumentForUser(req.user.id, id);
+   if (!ok) {
+      return res
+         .status(404)
+         .json({ success: false, message: "Document not found" });
+   }
+   res.json({ success: true });
+});
+
 app.get("/api/admin/export", (_req, res) => {
-   // :contentReference[oaicite:29]{index=29}
    const users = db
       .prepare("SELECT id, name, email, createdAt, updatedAt FROM users")
       .all();
@@ -249,10 +415,9 @@ app.get("/api/admin/export", (_req, res) => {
 });
 
 /* =========================================================
-   Your existing non-auth endpoints
+   AI REWRITE ENDPOINT
    ========================================================= */
 
-// 🧠 AI Rewrite Endpoint
 const rewriteSchema = z.object({
    sentence: z.string().min(1).max(15000000),
    keepTerms: z.array(z.string()).optional().default([]),
@@ -305,39 +470,64 @@ app.post("/ai/rewrite", async (req, res) => {
       const easy = data?.choices?.[0]?.message?.content?.trim() || "";
       res.json({ easyRead: easy });
    } catch (e) {
-      console.error("AI rewrite error:", e);
       res.status(400).json({ error: e.message || "Bad request" });
    }
 });
 
-// 📄 PDF → Text
-app.post("/upload/pdf", authenticate, upload.single("file"), async (req, res) => {
-   try {
-      if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+/* =========================================================
+   FILE UPLOAD ENDPOINTS
+   ========================================================= */
 
-      const data = await pdfParse(req.file.buffer);
-      const text = (data.text || "").trim();
+app.post(
+   "/upload/pdf",
+   authenticate,
+   upload.single("file"),
+   async (req, res) => {
+      try {
+         if (!req.file)
+            return res.status(400).json({ error: "No file uploaded" });
 
-      // Save to DB
-      saveDocument(req.user.id, req.file.originalname, req.file.mimetype);
+         const data = await pdfParse(req.file.buffer);
+         const text = (data.text || "").trim();
+         const original = req.file.originalname || "Uploaded PDF";
 
-      res.json({ text: clamp(text) });
-   } catch {
-      res.status(500).json({ error: "Failed to parse PDF" });
+         // (Optional) store uploaded pdf on server filesystem
+         // This path is server-local; clients cannot open it directly.
+         // We keep fileUrl null here to avoid implying it's device-accessible.
+         const title = original;
+         const fileName = original;
+         const fileUrl = null;
+
+         const doc = createDocument(req.user.id, {
+            title,
+            content: clamp(text),
+            type: "pdf",
+            sourceTag: "upload",
+            fileName,
+            fileUrl,
+         });
+
+         res.json({ success: true, text: clamp(text), document: doc });
+      } catch (e) {
+         res.status(500).json({ error: "Failed to parse PDF" });
+      }
    }
-});
+);
 
-// 🖼️ Image OCR → Text
 app.post("/upload/image", upload.single("file"), async (req, res) => {
    try {
       if (!req.file) return res.status(400).json({ error: "No file uploaded" });
       const result = await Tesseract.recognize(req.file.buffer, "eng");
       const text = (result?.data?.text || "").trim();
       res.json({ text: clamp(text) });
-   } catch {
+   } catch (e) {
       res.status(500).json({ error: "Failed to OCR image" });
    }
 });
+
+/* =========================================================
+   SERVER START
+   ========================================================= */
 
 app.listen(PORT, "0.0.0.0", () =>
    console.log(`API running on http://0.0.0.0:${PORT}\nUsers DB: ${DB_PATH}`)

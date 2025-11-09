@@ -21,6 +21,7 @@ interface User {
 
 interface AuthContextType {
    user: User | null;
+   token: string | null; // ✅ expose token for authenticated requests
    isLoading: boolean;
    login: (email: string, password: string) => Promise<boolean>;
    register: (
@@ -73,6 +74,7 @@ const USER_STORAGE_KEY = "easyread.user";
 // ----------------------
 export function AuthProvider({ children }: { children: ReactNode }) {
    const [user, setUser] = useState<User | null>(null);
+   const [token, setToken] = useState<string | null>(null); // ✅ keep token in state
    const [isLoading, setIsLoading] = useState(true);
 
    useEffect(() => {
@@ -84,10 +86,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
          // clean old local-user storage (from your original implementation)
          await AsyncStorage.removeItem("easyread.users");
 
-         const token = await AsyncStorage.getItem(TOKEN_STORAGE_KEY);
+         const storedToken = await AsyncStorage.getItem(TOKEN_STORAGE_KEY);
          const userData = await AsyncStorage.getItem(USER_STORAGE_KEY);
 
-         if (token && userData) {
+         if (storedToken) setToken(storedToken);
+         if (storedToken && userData) {
             setUser(JSON.parse(userData));
          }
       } catch (err) {
@@ -125,6 +128,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                USER_STORAGE_KEY,
                JSON.stringify(data.user)
             );
+            setToken(data.token); // ✅ keep in memory
             setUser(data.user);
             return true;
          }
@@ -161,6 +165,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                USER_STORAGE_KEY,
                JSON.stringify(data.user)
             );
+            setToken(data.token); // ✅ keep in memory
             setUser(data.user);
             return true;
          }
@@ -180,13 +185,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       try {
          console.log("Logout triggered");
 
-         const token = await AsyncStorage.getItem(TOKEN_STORAGE_KEY);
+         const storedToken =
+            token || (await AsyncStorage.getItem(TOKEN_STORAGE_KEY));
 
-         if (token) {
+         if (storedToken) {
             const response = await fetch(`${API_URL}/logout`, {
                method: "POST",
                headers: {
-                  Authorization: `Bearer ${token}`,
+                  Authorization: `Bearer ${storedToken}`,
                   "Content-Type": "application/json",
                },
             });
@@ -196,6 +202,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
          await AsyncStorage.removeItem(TOKEN_STORAGE_KEY);
          await AsyncStorage.removeItem(USER_STORAGE_KEY);
+         setToken(null); // ✅ clear
          setUser(null);
 
          console.log("Token + user cleared locally");
@@ -206,7 +213,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
    return (
       <AuthContext.Provider
-         value={{ user, isLoading, login, register, logout }}
+         value={{ user, token, isLoading, login, register, logout }}
       >
          {children}
       </AuthContext.Provider>

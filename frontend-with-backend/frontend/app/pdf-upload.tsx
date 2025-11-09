@@ -22,7 +22,31 @@ import { useTheme } from "@/hooks/useTheme";
 import { useReaderTextStyle } from "@/hooks/useReaderPreferences";
 
 // same helper used elsewhere
-import { rewriteEasyRead } from "../lib/api";
+import { rewriteEasyRead, createUserDocument } from "../lib/api";
+
+const AUTH_TOKEN_KEYS = ["easyread.token", "authToken", "token"];
+
+const getAuthToken = async () => {
+   for (const key of AUTH_TOKEN_KEYS) {
+      const raw = await AsyncStorage.getItem(key);
+      if (!raw) continue;
+
+      try {
+         const parsed = JSON.parse(raw);
+         if (typeof parsed === "string") return parsed;
+         if (parsed?.token && typeof parsed.token === "string")
+            return parsed.token;
+         if (parsed?.authToken && typeof parsed.authToken === "string")
+            return parsed.authToken;
+         if (parsed?.accessToken && typeof parsed.accessToken === "string")
+            return parsed.accessToken;
+         if (parsed?.jwt && typeof parsed.jwt === "string") return parsed.jwt;
+      } catch {
+         return raw;
+      }
+   }
+   return null;
+};
 
 export default function PDFUploadScreen() {
    const { theme } = useTheme();
@@ -153,6 +177,21 @@ export default function PDFUploadScreen() {
             },
             actionBtnText: { fontSize: 12, fontWeight: "600" },
 
+            actionChip: {
+               flexDirection: "row",
+               alignItems: "center",
+               paddingHorizontal: 10,
+               paddingVertical: 6,
+               borderRadius: 12,
+               backgroundColor: Colors[theme].buttonBackground,
+               gap: 8,
+            },
+            actionChipText: {
+               fontSize: 13,
+               fontWeight: "600",
+               color: "#fff",
+            },
+
             textContainer: {
                borderRadius: 12,
                padding: 16,
@@ -162,7 +201,6 @@ export default function PDFUploadScreen() {
             },
             extractedText: { fontSize: 14, lineHeight: 20 },
 
-            // Easy Read modal (tall sheet)
             modalOverlay: {
                flex: 1,
                backgroundColor: "rgba(0,0,0,0.45)",
@@ -227,7 +265,6 @@ export default function PDFUploadScreen() {
                color: Colors[theme].textSecondary,
             },
 
-            // smaller alert-style guard
             guardOverlay: {
                flex: 1,
                backgroundColor: "rgba(0,0,0,0.45)",
@@ -366,8 +403,6 @@ export default function PDFUploadScreen() {
       }
    };
 
-   // Save Easy Read text as a PDF file (with sourceTag: "upload")
-   // and respect reader preferences
    const saveEasyReadDocument = async (leaveAfter: boolean) => {
       const text = easyRead.trim();
       if (!text) return;
@@ -432,21 +467,23 @@ export default function PDFUploadScreen() {
             encoding: FS.EncodingType.Base64,
          });
 
-         const document = {
-            id: Date.now().toString(),
+         const token = await getAuthToken();
+         if (!token) {
+            Alert.alert(
+               "Not signed in",
+               "Please sign in to save this document to your account."
+            );
+            return;
+         }
+
+         await createUserDocument(token, {
             title,
             content: text,
-            type: "pdf" as const,
-            date: new Date().toISOString(),
+            type: "pdf",
+            sourceTag: "upload",
             fileName,
             url: dest,
-            sourceTag: "upload" as const,
-         };
-
-         const existing = await AsyncStorage.getItem("documents");
-         const docs = existing ? JSON.parse(existing) : [];
-         docs.unshift(document);
-         await AsyncStorage.setItem("documents", JSON.stringify(docs));
+         });
 
          setEasyHasSaved(true);
 
@@ -497,7 +534,6 @@ export default function PDFUploadScreen() {
 
    return (
       <ThemedView style={styles.container}>
-         {/* HEADER */}
          <ThemedView style={styles.header}>
             <TouchableOpacity onPress={handleBack} style={styles.backButton}>
                <Ionicons name="chevron-back" size={24} color="#fff" />
@@ -509,7 +545,6 @@ export default function PDFUploadScreen() {
             style={styles.scrollView}
             contentContainerStyle={styles.scrollContent}
          >
-            {/* File Picker */}
             <TouchableOpacity
                style={[
                   styles.uploadButton,
@@ -525,7 +560,6 @@ export default function PDFUploadScreen() {
                </ThemedText>
             </TouchableOpacity>
 
-            {/* Selected File Info */}
             {selectedFile && (
                <ThemedView style={styles.fileInfo}>
                   <Ionicons
@@ -577,7 +611,6 @@ export default function PDFUploadScreen() {
                </ThemedView>
             )}
 
-            {/* Loading State while picking (no file yet) */}
             {loading && !selectedFile && (
                <ThemedView style={styles.loadingContainer}>
                   <Ionicons
@@ -596,7 +629,6 @@ export default function PDFUploadScreen() {
                </ThemedView>
             )}
 
-            {/* Extract Button */}
             {selectedFile && !extractedText && (
                <TouchableOpacity
                   style={[
@@ -615,7 +647,6 @@ export default function PDFUploadScreen() {
                </TouchableOpacity>
             )}
 
-            {/* Extracted Text Block */}
             {extractedText && (
                <ThemedView style={styles.resultSection}>
                   <ThemedView style={styles.resultHeader}>
@@ -625,29 +656,35 @@ export default function PDFUploadScreen() {
 
                      <ThemedView style={styles.resultActions}>
                         <TouchableOpacity
-                           style={styles.actionBtn}
+                           style={[
+                              styles.actionChip,
+                              isTranslating && { opacity: 0.7 },
+                           ]}
                            onPress={
                               hasEasyRead
                                  ? () => setEasyModalVisible(true)
                                  : handleTranslate
                            }
-                           disabled={isTranslating}
+                           disabled={
+                              isTranslating ||
+                              (!hasEasyRead && !extractedText.trim())
+                           }
                         >
                            <Ionicons
                               name={
                                  hasEasyRead
                                     ? "document-text-outline"
-                                    : "language-outline"
+                                    : "sparkles-outline"
                               }
-                              size={16}
-                              color={Colors[theme].accent}
+                              size={14}
+                              color="#fff"
                            />
-                           <ThemedText style={styles.actionBtnText}>
+                           <ThemedText style={styles.actionChipText}>
                               {isTranslating
-                                 ? "Translating…"
+                                 ? "Creating Easy Read..."
                                  : hasEasyRead
                                  ? "Open Easy Read"
-                                 : "Translate"}
+                                 : "Easy Read it"}
                            </ThemedText>
                         </TouchableOpacity>
                      </ThemedView>
@@ -666,7 +703,6 @@ export default function PDFUploadScreen() {
                </ThemedView>
             )}
 
-            {/* Hidden worker WebView for extraction */}
             {loading && pdfBase64 && (
                <WebView
                   originWhitelist={["*"]}
@@ -677,7 +713,6 @@ export default function PDFUploadScreen() {
             )}
          </ScrollView>
 
-         {/* EASY READ MODAL (tall sheet) */}
          <Modal
             visible={easyModalVisible}
             transparent
@@ -751,7 +786,6 @@ export default function PDFUploadScreen() {
             </ThemedView>
          </Modal>
 
-         {/* UNSAVED GUARD MODAL (small alert style) */}
          <Modal
             visible={leaveGuardVisible}
             transparent

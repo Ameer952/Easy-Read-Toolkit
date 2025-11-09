@@ -21,11 +21,38 @@ import { useTheme } from "@/hooks/useTheme";
 import { useAuth } from "@/hooks/useAuth";
 import { notifyAvatar } from "@/lib/avatarEvents";
 
+// SETTINGS API (USER-LINKED)
+import { fetchUserSettings } from "../../lib/api";
+
 type IoniconName = React.ComponentProps<typeof Ionicons>["name"];
 type ModalType = "help" | "about" | "logout" | "info" | "comingSoon" | null;
 
+const STORAGE_KEY = "easyread.settings.v1";
+const AUTH_TOKEN_KEYS = ["easyread.token", "authToken", "token"];
+
+const getAuthToken = async (): Promise<string | null> => {
+   for (const key of AUTH_TOKEN_KEYS) {
+      const raw = await AsyncStorage.getItem(key);
+      if (!raw) continue;
+      try {
+         const parsed = JSON.parse(raw as any);
+         if (typeof parsed === "string") return parsed;
+         if (parsed?.token && typeof parsed.token === "string")
+            return parsed.token;
+         if (parsed?.authToken && typeof parsed.authToken === "string")
+            return parsed.authToken;
+         if (parsed?.accessToken && typeof parsed.accessToken === "string")
+            return parsed.accessToken;
+         if (parsed?.jwt && typeof parsed.jwt === "string") return parsed.jwt;
+      } catch {
+         return raw;
+      }
+   }
+   return null;
+};
+
 export default function ProfileScreen() {
-   const { theme } = useTheme();
+   const { theme, setThemeMode, themeMode } = useTheme();
    const { user, logout } = useAuth();
    const insets = useSafeAreaInsets();
    const router = useRouter();
@@ -194,6 +221,55 @@ export default function ProfileScreen() {
       return "information-circle-outline";
    };
 
+   // --- SYNC HANDLER (fetch settings from server & apply) ---
+   const handleSync = async () => {
+      try {
+         const token = await getAuthToken();
+         if (!token) {
+            openModal(
+               "info",
+               "Not signed in",
+               "Please sign in to sync settings."
+            );
+            return;
+         }
+
+         const remote = await fetchUserSettings(token).catch(() => null);
+         if (remote?.settings) {
+            const s = remote.settings;
+
+            // persist remotely-fetched settings locally
+            await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(s)).catch(
+               () => {}
+            );
+
+            // apply theme if provided
+            if (
+               s.themeMode &&
+               typeof s.themeMode === "string" &&
+               s.themeMode !== themeMode
+            ) {
+               setThemeMode(s.themeMode);
+            }
+
+            openModal("info", "Synced", "Your settings have been refreshed.");
+         } else {
+            openModal(
+               "info",
+               "Nothing to sync",
+               "No remote settings were found."
+            );
+         }
+      } catch (err) {
+         console.log("Sync failed:", err);
+         openModal(
+            "info",
+            "Sync failed",
+            "Could not refresh settings. Please try again."
+         );
+      }
+   };
+
    return (
       <ThemedView
          style={[
@@ -300,6 +376,33 @@ export default function ProfileScreen() {
                      />
                   </TouchableOpacity>
                ))}
+
+               {/* Sync Button (above Logout) */}
+               <TouchableOpacity
+                  style={[
+                     styles.syncButton,
+                     {
+                        borderColor: Colors[theme].border,
+                        backgroundColor: Colors[theme].surface,
+                        justifyContent: "center",
+                        alignItems: "center",
+                     },
+                  ]}
+                  onPress={handleSync}
+                  activeOpacity={0.9}
+               >
+                  <Ionicons
+                     name="sync-outline"
+                     size={18}
+                     color={Colors[theme].text}
+                     style={{ marginRight: 8 }}
+                  />
+                  <ThemedText
+                     style={[styles.syncText, { color: Colors[theme].text }]}
+                  >
+                     Sync Settings
+                  </ThemedText>
+               </TouchableOpacity>
 
                {/* Logout Button */}
                <TouchableOpacity
@@ -507,7 +610,22 @@ const styles = StyleSheet.create({
    menuInfo: { flex: 1 },
    menuTitle: { fontSize: 16, fontWeight: "600", marginBottom: 2 },
    menuSubtitle: { fontSize: 14, opacity: 0.6 },
-   logoutButton: { marginTop: 16, borderRadius: 12, paddingVertical: 16 },
+
+   // Sync + Logout buttons
+   syncButton: {
+      marginTop: 8,
+      borderRadius: 12,
+      paddingVertical: 14,
+      paddingHorizontal: 16,
+      borderWidth: 1,
+      flexDirection: "row",
+      alignItems: "center",
+   },
+   syncText: {
+      fontSize: 16,
+      fontWeight: "600",
+   },
+   logoutButton: { marginTop: 12, borderRadius: 12, paddingVertical: 16 },
    logoutText: {
       color: "#fff",
       fontSize: 16,

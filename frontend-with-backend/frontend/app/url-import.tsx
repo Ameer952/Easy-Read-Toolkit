@@ -21,8 +21,31 @@ import { Colors } from "@/constants/Colors";
 import { useTheme } from "@/hooks/useTheme";
 import { useReaderTextStyle } from "@/hooks/useReaderPreferences";
 
-// same helper used by Translator screen
-import { rewriteEasyRead } from "../lib/api";
+import { rewriteEasyRead, createUserDocument } from "../lib/api";
+
+const AUTH_TOKEN_KEYS = ["easyread.token", "authToken", "token"];
+
+const getAuthToken = async () => {
+   for (const key of AUTH_TOKEN_KEYS) {
+      const raw = await AsyncStorage.getItem(key);
+      if (!raw) continue;
+
+      try {
+         const parsed = JSON.parse(raw);
+         if (typeof parsed === "string") return parsed;
+         if (parsed?.token && typeof parsed.token === "string")
+            return parsed.token;
+         if (parsed?.authToken && typeof parsed.authToken === "string")
+            return parsed.authToken;
+         if (parsed?.accessToken && typeof parsed.accessToken === "string")
+            return parsed.accessToken;
+         if (parsed?.jwt && typeof parsed.jwt === "string") return parsed.jwt;
+      } catch {
+         return raw;
+      }
+   }
+   return null;
+};
 
 export default function UrlImportScreen() {
    const { theme } = useTheme();
@@ -31,15 +54,12 @@ export default function UrlImportScreen() {
 
    const { textStyle: readerTextStyle, prefs } = useReaderTextStyle();
 
-   const [url, setUrl] = useState(
-      "https://en.wikipedia.org/wiki/Artificial_intelligence"
-   );
+   const [url, setUrl] = useState("https://www.easyreadtoolbox.info/");
    const [extracted, setExtracted] = useState("");
    const [loading, setLoading] = useState(false);
    const [documentTitle, setDocumentTitle] = useState("");
    const [retryCount, setRetryCount] = useState(0);
 
-   // Easy Read state
    const [easyRead, setEasyRead] = useState("");
    const [isTranslating, setIsTranslating] = useState(false);
    const [easyModalVisible, setEasyModalVisible] = useState(false);
@@ -167,15 +187,13 @@ export default function UrlImportScreen() {
                fontSize: 12,
                color: Colors[theme].textSecondary,
             },
-
-            // Easy Read modal (tall sheet)
             modalOverlay: {
                flex: 1,
                backgroundColor: "rgba(0,0,0,0.45)",
                justifyContent: "flex-end",
             },
             modalCard: {
-               height: "90%", // tall sheet, nearly full screen
+               height: "90%",
                borderTopLeftRadius: 18,
                borderTopRightRadius: 18,
                paddingHorizontal: 18,
@@ -224,8 +242,6 @@ export default function UrlImportScreen() {
             modalPrimaryButtonText: {
                color: "#fff",
             },
-
-            // unsaved guard text
             guardText: {
                fontSize: 14,
                lineHeight: 20,
@@ -233,8 +249,6 @@ export default function UrlImportScreen() {
                marginBottom: 12,
                color: Colors[theme].textSecondary,
             },
-
-            // small alert-style guard
             guardOverlay: {
                flex: 1,
                backgroundColor: "rgba(0,0,0,0.45)",
@@ -249,6 +263,20 @@ export default function UrlImportScreen() {
                borderWidth: 1,
                backgroundColor: Colors[theme].surface,
                borderColor: Colors[theme].border,
+            },
+            actionChip: {
+               flexDirection: "row",
+               alignItems: "center",
+               paddingHorizontal: 10,
+               paddingVertical: 6,
+               borderRadius: 12,
+               backgroundColor: Colors[theme].buttonBackground,
+               gap: 8,
+            },
+            actionChipText: {
+               fontSize: 13,
+               fontWeight: "600",
+               color: "#fff",
             },
          }),
       [theme]
@@ -303,8 +331,6 @@ export default function UrlImportScreen() {
       }
    };
 
-   // Save Easy Read text as a PDF document (so Docs screen opens it in pdf-viewer)
-   // and respect reader preferences
    const saveEasyReadDocument = async (leaveAfter: boolean) => {
       const text = easyRead.trim();
       if (!text) return;
@@ -319,7 +345,6 @@ export default function UrlImportScreen() {
          const title =
             documentTitle || `URL Document ${new Date().toLocaleDateString()}`;
 
-         // map reader prefs to CSS
          const baseFontSize = prefs.fontSize ?? 16;
          const lhFactor =
             prefs.lineHeight === "Compact"
@@ -368,21 +393,23 @@ export default function UrlImportScreen() {
             encoding: FS.EncodingType.Base64,
          });
 
-         const document = {
-            id: Date.now().toString(),
+         const token = await getAuthToken();
+         if (!token) {
+            Alert.alert(
+               "Not signed in",
+               "Please sign in to save this document to your account."
+            );
+            return;
+         }
+
+         await createUserDocument(token, {
             title,
             content: text,
-            type: "pdf" as const,
-            date: new Date().toISOString(),
+            type: "web",
+            sourceTag: "url",
             fileName,
             url: dest,
-            sourceTag: "url" as const,
-         };
-
-         const existing = await AsyncStorage.getItem("documents");
-         const docs = existing ? JSON.parse(existing) : [];
-         docs.unshift(document);
-         await AsyncStorage.setItem("documents", JSON.stringify(docs));
+         });
 
          setEasyHasSaved(true);
 
@@ -430,7 +457,6 @@ export default function UrlImportScreen() {
 
    return (
       <ThemedView style={styles.container}>
-         {/* HEADER */}
          <ThemedView style={styles.header}>
             <TouchableOpacity onPress={handleBack} style={styles.backButton}>
                <Ionicons name="chevron-back" size={24} color="#fff" />
@@ -438,7 +464,6 @@ export default function UrlImportScreen() {
             <ThemedText style={styles.headerTitle}>Import from URL</ThemedText>
          </ThemedView>
 
-         {/* INPUT + ACTIONS */}
          <ThemedView style={styles.controls}>
             <View style={styles.urlInputContainer}>
                <TextInput
@@ -520,7 +545,6 @@ export default function UrlImportScreen() {
             </ThemedView>
          </ThemedView>
 
-         {/* WORKER WEBVIEW */}
          <WebView
             ref={webRef}
             source={{ uri: url }}
@@ -530,7 +554,6 @@ export default function UrlImportScreen() {
             style={styles.webview}
          />
 
-         {/* RESULT */}
          {!!extracted && (
             <ScrollView style={styles.resultContainer}>
                <ThemedView style={styles.result}>
@@ -541,29 +564,35 @@ export default function UrlImportScreen() {
 
                      <ThemedView style={styles.resultActions}>
                         <TouchableOpacity
-                           style={styles.actionBtn}
+                           style={[
+                              styles.actionChip,
+                              isTranslating && { opacity: 0.7 },
+                           ]}
                            onPress={
                               hasEasyRead
                                  ? () => setEasyModalVisible(true)
                                  : handleTranslate
                            }
-                           disabled={isTranslating}
+                           disabled={
+                              isTranslating ||
+                              (!hasEasyRead && !extracted.trim())
+                           }
                         >
                            <Ionicons
                               name={
                                  hasEasyRead
                                     ? "document-text-outline"
-                                    : "language-outline"
+                                    : "sparkles-outline"
                               }
-                              size={16}
-                              color={Colors[theme].accent}
+                              size={14}
+                              color="#fff"
                            />
-                           <ThemedText style={styles.actionBtnText}>
+                           <ThemedText style={styles.actionChipText}>
                               {isTranslating
-                                 ? "Translating…"
+                                 ? "Creating Easy Read..."
                                  : hasEasyRead
                                  ? "Open Easy Read"
-                                 : "Translate"}
+                                 : "Easy Read it"}
                            </ThemedText>
                         </TouchableOpacity>
                      </ThemedView>
@@ -582,7 +611,6 @@ export default function UrlImportScreen() {
             </ScrollView>
          )}
 
-         {/* EASY READ MODAL (tall sheet) */}
          <Modal
             visible={easyModalVisible}
             transparent
@@ -656,7 +684,6 @@ export default function UrlImportScreen() {
             </ThemedView>
          </Modal>
 
-         {/* UNSAVED GUARD MODAL (small alert style) */}
          <Modal
             visible={leaveGuardVisible}
             transparent
